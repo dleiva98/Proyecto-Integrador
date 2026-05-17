@@ -1,0 +1,52 @@
+{
+  "Gramatica_lengua_bribri_Jara2018.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/Gramatica_lengua_bribri_Jara2018.pdf",
+    "sha256": "b8c5250cb5ec0e86ea4eb2b12bbef61e86de5bda4e6bbae72d521f2cfa1f1ef2",
+    "size": 2509552
+  },
+  "Sevtto_bribri_ie_Hablemos.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/Sevtto_bribri_ie_Hablemos.pdf",
+    "sha256": "75a64ebeea1dc7bb8e99f5fc6da0096352f1f2ca5740b3715282536097e884a2",
+    "size": 12913170
+  },
+  "I_tte_Historias_bribris.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/I_tte_Historias_bribris.pdf",
+    "sha256": "f253654a8d19502c030add4fb5e1525b9f25711d996df3759db47b184d1b0739",
+    "size": 3597100
+  },
+  "Ditso_rukuo_Identidad_semillas.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/Ditso_rukuo_Identidad_semillas.pdf",
+    "sha256": "f39f8ab21ec34f65417140593922ff402f221b7453399f99deac9a4ce4cf0c75",
+    "size": 3344525
+  },
+  "Palabras_Francisco_Garcia.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/Palabras_Francisco_Garcia.pdf",
+    "sha256": "17df0031501f03dbca4cbd783daac7903a6489cdc7ba292b2c9511dbc112fb68",
+    "size": 4723427
+  },
+  "ESSJ_Sanchez_Avendano_Vol1.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/ESSJ_Sanchez_Avendano_Vol1.pdf",
+    "sha256": "9a0ba58dd2e5703921b8137f0aed5d9448142a4bacc912c6a47a261afd736683",
+    "size": 13569321
+  },
+  "Diccionario_mitologia_bribri_UCR.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/Diccionario_mitologia_bribri_UCR.pdf",
+    "sha256": "f77447a56d5b3e76c469a6e1455ccf2b9cf0842e1486cfd9fcba19837d94c305",
+    "size": 11856817
+  },
+  "Ko_Keska_Lugar_del_tiempo.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/Ko_Keska_Lugar_del_tiempo.pdf",
+    "sha256": "29ed1977808be2b25d02baa18ee75fc88cfa9b8fb3b1f57169aabce01b8dabcc",
+    "size": 11217812
+  },
+  "Cargos_tradicionales_pueblo_bribri.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/Cargos_tradicionales_pueblo_bribri.pdf",
+    "sha256": "a5a24ae60a6f526c23e8fddfb61a72604f34879721e38b3e0ee1232c726e6275",
+    "size": 3842177
+  },
+  "Se_dor_ste.pdf": {
+    "path": "/home/user/Proyecto-Integrador/data/raw/pdfs/Se_dor_ste.pdf",
+    "sha256": "3d2ed19de8663b5a97732ba543f04a3c8f8d19cefb237b606787f1617bd84394",
+    "size": 17478525
+  }
+}
