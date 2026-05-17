@@ -1,7 +1,7 @@
-# Programa Voces — Corpus paralelo bribri-español (v0)
+# Programa Voces — Corpus paralelo bribri-español 
 
 Pipeline de construcción del corpus paralelo bribri-español para el
-Proyecto Integrador de la M.Sc. en IA Aplicada (Tec de Monterrey, equipo
+Proyecto Integrador de la Maestria. en IA Aplicada (Tec de Monterrey, equipo
 Costa Rica), correspondiente al **Componente B** descrito en
 `Avance1_Equipo66.pdf`.
 
