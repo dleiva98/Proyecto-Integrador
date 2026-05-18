@@ -1,7 +1,80 @@
+# ------------------------------
+# Bytecode y cachés de Python
+# ------------------------------
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+
+# ------------------------------
+# Entornos virtuales
+# ------------------------------
 .venv/
+venv/
+env/
+ENV/
+
+# ------------------------------
+# Artefactos de build y empaquetado
+# ------------------------------
+build/
+dist/
+site/
+.eggs/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+
+# ------------------------------
+# Resultados de cobertura y pruebas
+# ------------------------------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# ------------------------------
+# Logs y archivos locales de ejecución
+# ------------------------------
+*.log
+*.out
+*.err
+*.pid
+
+# ------------------------------
+# Variables de entorno y configuración local
+# ------------------------------
 .env
-.DS_Store
+.env.*
+*.local
+
+# ------------------------------
+# Jupyter
+# ------------------------------
 .ipynb_checkpoints/
+
+# ------------------------------
+# IDE y editor
+# ------------------------------
+.idea/
+.vscode/
+*.iml
+
+# ------------------------------
+# Archivos específicos del sistema operativo
+# ------------------------------
+.DS_Store
+Thumbs.db
+
+# ------------------------------
+# Datos gestionados con DVC
+# ------------------------------
+data/raw/
+data/interim/
+data/processed/
