@@ -136,6 +136,30 @@ el dominio (`HTTP 403 host_not_allowed`). Para incorporar la fuente:
 Una vez disponible, el scraper guardará HTML crudo bajo
 `data/raw/web/www.lenguabribri.com/` y emitirá pares con `domain="web"`.
 
+## Cómo correr el pipeline v2 (scraping opcional + export corpus legible)
+
+```bash
+python scripts/run_pipeline_v2.py
+```
+Activar scraping web (opcional)
+```bash
+python scripts/run_pipeline_v2.py --enable-web
+```
+Exportar corpus legible Bribri:Español
+```bash
+python scripts/run_pipeline_v2.py --print-corpus
+```
+Activar scraping + exportar corpus legible + limitar pares
+```bash
+python scripts/run_pipeline_v2.py --enable-web --print-corpus --print-corpus-max 300
+```
+Parámetros disponibles en v2
+* ```bash --enable-web: habilita extracción web.```
+* ```bash --print-corpus: exporta un TXT legible con formato BRI: / ES:.```
+* ```bash --print-corpus-path: ruta de salida del TXT (default: data/processed/corpus_v0_bri_es.txt).```
+* ```bash --print-corpus-max: máximo de pares a exportar (0 = todos).```
+
+
 ## Próximos pasos (alineado con §2.5 del reporte de avance)
 
 1. **Alineación oración-por-oración** con hunalign + LASER embeddings para
