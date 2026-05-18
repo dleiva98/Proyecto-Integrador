@@ -32,7 +32,7 @@ from voces_corpus.extractors import (  # noqa: E402
     pdf_interlinear,
     pdf_trilingual,
     pdf_versicle,
-    we_scrapper_v2,
+    web_scraper_v2,
 )
 from voces_corpus.filters import apply_filters  # noqa: E402
 from voces_corpus.schema import ParallelPair  # noqa: E402
@@ -189,7 +189,7 @@ def main() -> int:
         for url in WEB_SOURCES:
             log.info("web.start", url=url)
             try:
-                pairs = we_scrapper_v2.crawl(url, WEB_DIR)
+                pairs = web_scraper_v2.crawl(url, WEB_DIR)
             except Exception as exc:
                 log.exception("web.failed", url=url, error=str(exc))
                 failures[url] = f"{type(exc).__name__}: {exc}"
