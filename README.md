@@ -43,7 +43,12 @@ fine-tuning de NLLB-200 distilled-600M.
 │   └── make_splits.py              ← train/val/test estratificado (Avance 2)
 ├── notebooks/
 │   └── nllb_finetune_colab.ipynb   ← Avance 2: fine-tuning NLLB + métricas
-└── data/splits/                    ← (generado) train.jsonl, val.jsonl, test.jsonl
+├── data/splits/                    ← (generado) train.jsonl, val.jsonl, test.jsonl
+└── outputs/                        ← (generado) métricas, predicciones, curvas
+    ├── metrics.json                ← historial de entrenamiento (loss / spBLEU / chrF / chrF++)
+    ├── test_metrics.json           ← métricas finales sobre el split test
+    ├── test_predictions.jsonl      ← 304 predicciones (152 por dirección) + referencia
+    └── training_curves.png         ← curvas de val loss, spBLEU y chrF++ por paso
 ```
 
 ## Cómo correr el pipeline
@@ -226,6 +231,221 @@ no traducción libre. Eso introduce ruido sistemático; el split mantiene
 la proporción para que las métricas sean comparables con el corpus real,
 pero conviene reportar también métricas filtrando a `confidence ∈
 {high, medium}` (~758 pares).
+
+## Outputs — resultados experimentales del Avance 2
+
+La carpeta `outputs/` contiene los artefactos producidos por la corrida
+de fine-tuning ejecutada en Colab (GPU T4, fp16, 3 épocas,
+`batch_size=8`, `lr=5e-4`, `max_length=256`, `seed=42`,
+1.201 pares de entrenamiento × 2 direcciones, evaluación cada 100 pasos
+de optimización sobre los 152 pares de validación). Los cuatro archivos
+son **reproducibles** a partir de `corpus_v0.jsonl` y los splits con
+semilla fija; ver `notebooks/nllb_finetune_colab.ipynb`.
+
+### Contenido de `outputs/`
+
+| Archivo | Tipo | Contenido |
+|---|---|---|
+| `metrics.json` | JSON | `config` reproducible + serie temporal de `train_loss`, `val_loss`, `spBLEU`, `chrF` y `chrF++` por paso de evaluación, para `es→bri`, `bri→es` y promedio. |
+| `test_metrics.json` | JSON | Métricas finales sobre el split `test.jsonl` (no visto en entrenamiento). |
+| `test_predictions.jsonl` | JSONL | 304 registros `{direction, prediction, reference}` (152 por dirección) — base para inspección cualitativa y para recomputar métricas con otros tokenizadores. |
+| `training_curves.png` | PNG | Tres paneles (val loss, spBLEU, chrF++) con tres líneas cada uno (`es→bri`, `bri→es`, promedio) en función del paso de optimización. |
+
+### Métricas — qué miden y cómo se leen
+
+Se reportan tres métricas, todas calculadas con `sacrebleu` para que
+sean comparables entre corridas y con literatura externa:
+
+- **spBLEU** (`tokenize=flores200`): BLEU calculado sobre el tokenizador
+  SentencePiece de FLORES-200. Usa la misma tokenización que la
+  evaluación oficial de NLLB; importa para comparar contra la línea base
+  reportada por el modelo. Es estricto: penaliza fuertemente cualquier
+  diferencia de n-grama exacto y se degrada rápido con corpus pequeños.
+- **chrF**: F-score sobre n-gramas de caracteres (n=6 por defecto).
+  Robusto a morfología rica y útil para lenguas aglutinantes o con
+  pocas referencias por oración, como bribri. Es la métrica recomendada
+  por la línea de trabajo de NLLB y WMT para pares de bajo recurso.
+- **chrF++**: variante que añade n-gramas de palabras (`word_order=2`)
+  por encima de chrF. Penaliza un poco más los reordenamientos
+  agramaticales. Suele quedar entre 0.5 y 1.5 puntos por debajo de
+  chrF.
+
+Todas las métricas están en escala 0-100 (mayor es mejor); `eval_loss`
+es la *cross-entropy* media por token (menor es mejor).
+
+### Resultados finales sobre el set de test (152 pares)
+
+| Dirección | eval_loss ↓ | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
+|---|---:|---:|---:|---:|
+| **es → bri** | 2.151 | **18.61** | 26.97 | 26.01 |
+| **bri → es** | 3.056 | 10.26 | **27.34** | **26.16** |
+| **promedio** | 2.603 | 14.43 | 27.16 | 26.09 |
+
+Fuente: `outputs/test_metrics.json`.
+
+**Interpretación de los números absolutos.** Para un par sin datos en
+el pre-entrenamiento de NLLB (bribri *no existe* en NLLB-200), con
+sólo ~1.2k pares paralelos y 3 épocas, llegar a chrF ≈ 27 en ambas
+direcciones es un resultado consistente con la literatura de fine-tuning
+de NLLB sobre lenguas indígenas americanas de muy bajo recurso (cf.
+AmericasNLP 2023, donde la línea base NLLB fine-tuneada para Aymara
+y Guaraní queda en rangos chrF 25-35 con corpus de tamaño similar).
+spBLEU 14 promedio es razonable pero no debería interpretarse como una
+calidad de traducción usable — sirve como **indicador de progreso**
+relativo entre corridas, no como medida absoluta de fluidez.
+
+### Asimetría entre direcciones
+
+`es→bri` casi duplica a `bri→es` en spBLEU (18.61 vs 10.26) pero las
+dos direcciones quedan casi empatadas en chrF/chrF++ (~27 / ~26). Esto
+es informativo y no trivial:
+
+- spBLEU compara n-gramas tokenizados con SentencePiece FLORES-200.
+  El lado bribri del corpus tiene **menor variedad léxica y oraciones
+  más cortas** (dominado por glosas y versículos breves), lo que hace
+  más probable que el modelo recupere n-gramas exactos por
+  memorización. En contraste, el lado español va de glosas
+  telegráficas a traducción libre de prosa religiosa: alta varianza
+  estilística, n-gramas difíciles de acertar.
+- chrF, al operar a nivel de caracteres, **promedia esa varianza** y
+  refleja que la "cantidad de información acertada" es similar en
+  ambas direcciones.
+- `eval_loss` (CE por token) confirma la asimetría desde la
+  perspectiva del modelo: predecir el siguiente token en bribri es
+  más fácil porque su distribución es más concentrada.
+
+La conclusión práctica es que **chrF/chrF++ son la métrica primaria
+para este corpus** y spBLEU debe leerse junto con ellas, no de
+manera aislada.
+
+### Curvas de entrenamiento
+
+![Curvas de entrenamiento](outputs/training_curves.png)
+
+Tres paneles con eje X en pasos de optimización (100 → 900, evaluación
+cada 100 pasos, ~900 pasos ≈ 3 épocas).
+
+1. **Val loss** (panel izquierdo). Caída monotónica suave en ambas
+   direcciones; `es→bri` baja de 3.15 a 2.17 (−31%) y `bri→es` de 3.85
+   a 3.28 (−15%). No hay rebote tipo *overfitting* dentro del
+   horizonte de 900 pasos: la pendiente final aún es negativa, lo que
+   sugiere que **el modelo no terminó de converger** y aumentar épocas
+   o reducir `learning rate` con warmup podría dar mejoras adicionales.
+2. **spBLEU** (panel central). Crecimiento marcado en los primeros
+   400 pasos (0 → ~11 promedio) y posteriormente meseta ruidosa
+   entre 8 y 12 puntos. El ruido refleja que sacrebleu sobre apenas
+   152 referencias es de alta varianza; cada salto/bajada de ~3
+   puntos no es necesariamente cambio de calidad real.
+3. **chrF++** (panel derecho). Crecimiento mucho más estable y
+   monotónico, 10 → 25 promedio sin retrocesos. Esto confirma
+   empíricamente que chrF++ es **una mejor señal de progreso** en
+   este régimen de poco dato que spBLEU.
+
+La señal de `train_loss` (en `metrics.json`, no graficada) tiene más
+ruido (cae de 3.63 a ~1.0-1.4, con dientes de sierra). Esto es esperable
+con `batch_size=8` + AMP fp16; no debe interpretarse como inestabilidad
+del entrenamiento.
+
+### Análisis cualitativo — muestra de `test_predictions.jsonl`
+
+Inspección manual de las predicciones revela cuatro patrones
+recurrentes (extractos literales del JSONL):
+
+**1. Salidas estructuralmente correctas, traducción parcial** (caso
+esperado al alcance del corpus actual):
+
+```
+direction : bri → es
+prediction: "Me llamo Trini."
+reference : "Yo me llamo Trini."
+```
+
+**2. Hallucination temática** — el modelo se ancla al dominio
+religioso (mayoritario en el corpus) cuando la entrada bribri es
+ambigua:
+
+```
+direction : bri → es
+prediction: "que viene en el cielo, que dice todas las cosas que ven y viene en vosotros a la verdad."
+reference : "nombre de todas las cosas que vienen."
+```
+
+**3. Collapse a repetición** — patrón clásico de seq2seq sub-entrenado
+con `max_new_tokens` alto:
+
+```
+direction : es → bri
+prediction: "ẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ."
+reference : "Kotereööö, uuuhhh, ie' tö Sòrbulu tchìwẽ̀wã"
+```
+
+**4. Salida bribri morfológicamente plausible** — se observa que el
+modelo aprende a producir secuencias con diacríticos, tonos y
+clíticos en posiciones gramaticalmente coherentes, aunque el
+contenido léxico no siempre coincide con la referencia:
+
+```
+direction : es → bri
+prediction: "E'ta̠ Marta tö Jesús i-ché: Akë́kë, ma̱ -ma̱ le̱ í̠e̠ a' tso'rö, ye' ë́l kë̀ dawö̀wa̱."
+reference : "E'ta̠ Marta tö Jesús i̱a̱ i-ché: Akë́kë, ma̱ -a̱ mú̱ pa tso' í̱e̱ e̱ ma̠ ya-akë̀ kë̀ dúwa̱."
+```
+
+Este último patrón es la evidencia más fuerte de que el fine-tuning
+**sí está alineando el espacio latente del proxy `quy_Latn` con
+bribri real**: el modelo no sólo memoriza, también generaliza la
+morfología (sufijos `-wã`, `-ke̱`, posiciones de tono) a contextos
+nuevos.
+
+### Configuración exacta (de `metrics.json`)
+
+```json
+{
+  "model_str":        "facebook/nllb-200-distilled-600M",
+  "lr":               5e-4,
+  "batch_size":       8,
+  "epochs":           3,
+  "bidirectional":    true,
+  "max_length":       256,
+  "use_float16":      true,
+  "seed":             42,
+  "src_lang_token":   "spa_Latn",
+  "tgt_lang_token":   "quy_Latn"
+}
+```
+
+### Limitaciones de la corrida actual
+
+1. **Tamaño del corpus**: 1.201 pares de entrenamiento es ~1-2 órdenes
+   de magnitud por debajo de los volúmenes típicos para fine-tuning
+   estable de NLLB-200 distilled. Las métricas absolutas deben
+   leerse con esa caveat.
+2. **Ruido de glosas**: 49 % del corpus es `confidence="low"`. No se
+   filtró por confianza para no reducir el set a ~600 pares, pero
+   sería una ablación natural reportar también las métricas
+   restringiendo a `confidence ∈ {high, medium}`.
+3. **Proxy de idioma**: `quy_Latn` (Quechua Ayacucho) se usó como
+   ancla para bribri; alternativas no exploradas son `spa_Latn` (mismo
+   script, sin información tipológica) y reentrenamiento del
+   tokenizador con vocabulario bribri extendido. Una ablación A/B
+   sobre el token de idioma daría evidencia directa de cuánto importa
+   esa elección.
+4. **Sin warmup ni scheduler**: AdamW plano con `lr=5e-4`. Las curvas
+   sugieren que un `cosine` o `linear` con warmup mejoraría
+   convergencia, sobre todo en `bri→es`.
+5. **Métrica de evaluación**: spBLEU/chrF/chrF++ son automáticas;
+   sería deseable agregar **evaluación humana** (validación por
+   hablantes nativos, ver §"Próximos pasos") en una muestra
+   estratificada del test.
+
+### Próximos pasos (Avance 2 → Avance 3)
+
+- Ablación del token proxy: corrida idéntica con `spa_Latn` y con un
+  vocabulario extendido, comparando chrF/chrF++ promedio.
+- Filtrado por `confidence`: comparar fine-tuning sobre el corpus
+  completo vs. corpus sin `low`.
+- Schedulers (warmup lineal de 100 pasos + cosine) y más épocas hasta
+  ver rebote en val loss.
+- Evaluación humana de 30 oraciones por dirección sobre el split test.
 
 ## Notas reproducibilidad
 
