@@ -38,8 +38,12 @@ fine-tuning de NLLB-200 distilled-600M.
 │       ├── pdf_versicle.py         ← ESSJ Gabb (5 líneas por versículo)
 │       ├── pdf_trilingual.py       ← Ditsö̀ rukuö̀ (bri/es/en)
 │       └── web_scraper.py          ← lenguabribri.com (no usado, ver nota)
-└── scripts/
-    └── run_pipeline.py             ← orquestador end-to-end
+├── scripts/
+│   ├── run_pipeline.py             ← orquestador end-to-end
+│   └── make_splits.py              ← train/val/test estratificado (Avance 2)
+├── notebooks/
+│   └── nllb_finetune_colab.ipynb   ← Avance 2: fine-tuning NLLB + métricas
+└── data/splits/                    ← (generado) train.jsonl, val.jsonl, test.jsonl
 ```
 
 ## Cómo correr el pipeline
@@ -149,6 +153,79 @@ Una vez disponible, el scraper guardará HTML crudo bajo
    por dominio) usando el canal de retroalimentación del Componente A.
 4. **Recuperación** vía UCR de Krohn, Margery Peña y materiales MEP
    (sección 2.4 del reporte de avance).
+
+## Avance 2 — Fine-tuning NLLB-200 y métricas
+
+El segundo entregable usa el corpus `corpus_v0.jsonl` para hacer fine-tuning
+de `facebook/nllb-200-distilled-600M` en ambas direcciones (`es↔bri`) y
+reporta spBLEU, chrF y chrF++.
+
+### Splits
+
+```bash
+python scripts/make_splits.py
+```
+
+Produce `data/splits/{train,val,test}.jsonl` con división **80/10/10
+estratificada por `(domain, confidence)`** y semilla 42.
+Cuentas actuales: 1.201 train / 152 val / 152 test.
+
+### Cómo entrenar
+
+El entrenamiento **requiere GPU** (descarga ~2.4 GB de pesos y corre
+~30-45 min en T4). Recomendado: Colab.
+
+1. Abrí `notebooks/nllb_finetune_colab.ipynb` en Colab.
+2. Runtime → Change runtime type → **GPU** (T4 es suficiente).
+3. Ejecutá las celdas en orden. Clona este repo, instala
+   `transformers==4.48.3`, `torch`, `sacrebleu`, genera splits si
+   faltan, corre 3 épocas con `batch_size=8`, `lr=5e-4`, `fp16`, y
+   guarda artefactos en `outputs/`.
+
+Para correr el mismo flujo desde un entorno local con GPU:
+
+```bash
+pip install -r requirements.txt
+python scripts/make_splits.py
+python -m voces_corpus.training.nllb_train
+```
+
+Configuración por defecto en `src/voces_corpus/training/nllb_train.py`
+(`TrainConfig`). Editá la dataclass o pasale otra instancia a `train()`.
+
+### Métricas
+
+`src/voces_corpus/training/metrics.py` calcula spBLEU
+(`tokenize=flores200`), chrF y chrF++ sobre listas de predicciones y
+referencias. También sirve como CLI sobre un JSONL `{prediction, reference}`:
+
+```bash
+python -m voces_corpus.training.metrics outputs/test_predictions.jsonl \
+    --out outputs/test_metrics.json
+```
+
+El notebook ya genera `outputs/test_predictions.jsonl`,
+`outputs/test_metrics.json` y `outputs/training_curves.png`.
+
+### Decisión: token proxy para bribri
+
+Bribri (`bri`) no tiene token de idioma propio en NLLB-200. Usamos
+`quy_Latn` (Quechua Ayacucho) como proxy: lengua indígena americana, en
+script latino, presente en NLLB. La elección es **discutible** — el
+template oficial sugiere usar cualquier token siempre que el tokenizador
+no convierta caracteres importantes en `<unk>`. Alternativas a evaluar:
+`spa_Latn` (mismo script, baseline), `quy_Latn` (default actual), o un
+token reasignado tras vocabulario extendido. Esto entra en el análisis
+del Avance 2.
+
+### Limitación conocida
+
+El 49% del corpus (`I_tte_Historias_bribris` + Palabras García) tiene
+`confidence="low"` porque el "español" son glosas palabra-por-palabra,
+no traducción libre. Eso introduce ruido sistemático; el split mantiene
+la proporción para que las métricas sean comparables con el corpus real,
+pero conviene reportar también métricas filtrando a `confidence ∈
+{high, medium}` (~758 pares).
 
 ## Notas reproducibilidad
 

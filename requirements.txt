@@ -6,3 +6,11 @@ pyarrow>=15.0
 requests>=2.31
 beautifulsoup4>=4.12
 structlog>=24.0
+
+# Avance 2 — fine-tuning NLLB y métricas
+# (pesados; instalalos sólo si vas a entrenar/evaluar, idealmente en Colab GPU)
+torch>=2.2
+transformers==4.48.3
+tqdm>=4.66
+sacrebleu>=2.4
+matplotlib>=3.8
