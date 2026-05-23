@@ -170,6 +170,12 @@ def _json_default(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+
+def _json_default(obj):
+    if isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
 def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
     repo_root = Path(repo_root) if repo_root else Path.cwd()
 
