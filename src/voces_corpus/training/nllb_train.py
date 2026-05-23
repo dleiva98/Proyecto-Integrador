@@ -164,6 +164,18 @@ def evaluate_split(
 
 
 # =========== TRAIN ===========
+def _json_default(obj):
+    if isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+
+def _json_default(obj):
+    if isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
 def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
     repo_root = Path(repo_root) if repo_root else Path.cwd()
 
@@ -289,7 +301,7 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
 
                 (output_dir / "metrics.json").write_text(
                     json.dumps({k: v for k, v in history.items() if k != "config"} | {"config": history["config"]},
-                               indent=2, ensure_ascii=False)
+                               indent=2, ensure_ascii=False, default=_json_default)
                 )
 
                 if cfg.save_model_on_evaluation and avg_spbleu >= previous_best:
@@ -303,7 +315,7 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
     final_path = output_dir / "final_nllb"
     model.save_pretrained(final_path)
     tokenizer.save_pretrained(final_path)
-    (output_dir / "metrics.json").write_text(json.dumps(history, indent=2, ensure_ascii=False))
+    (output_dir / "metrics.json").write_text(json.dumps(history, indent=2, ensure_ascii=False, default=_json_default))
     print(f"Modelo final guardado en {final_path}")
     return history
 
