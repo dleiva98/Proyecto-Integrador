@@ -5,3 +5,8 @@ __pycache__/
 .env
 .DS_Store
 .ipynb_checkpoints/
+
+# Avance 2: artefactos pesados generados por el entrenamiento
+outputs/
+*.safetensors
+
