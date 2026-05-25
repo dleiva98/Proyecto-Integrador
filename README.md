@@ -42,7 +42,7 @@ fine-tuning de NLLB-200 distilled-600M.
 │   ├── run_pipeline.py             ← orquestador end-to-end
 │   └── make_splits.py              ← train/val/test estratificado (Avance 2)
 ├── notebooks/
-│   └── nllb_finetune_colab.ipynb   ← Avance 2: fine-tuning NLLB + métricas
+│   └── nllb_finetune_colab.ipynb   ← Avance 3: fine-tuning NLLB + métricas
 ├── data/splits/                    ← (generado) train.jsonl, val.jsonl, test.jsonl
 └── outputs/                        ← (generado) métricas, predicciones, curvas
     ├── metrics.json                ← historial de entrenamiento (loss / spBLEU / chrF / chrF++)
@@ -232,7 +232,7 @@ la proporción para que las métricas sean comparables con el corpus real,
 pero conviene reportar también métricas filtrando a `confidence ∈
 {high, medium}` (~758 pares).
 
-## Outputs — resultados experimentales del Avance 2
+## Outputs — resultados experimentales del Avance 3
 
 La carpeta `outputs/` contiene los artefactos producidos por la corrida
 de fine-tuning ejecutada en Colab (GPU T4, fp16, 3 épocas,
@@ -437,7 +437,7 @@ nuevos.
    hablantes nativos, ver §"Próximos pasos") en una muestra
    estratificada del test.
 
-### Próximos pasos (Avance 2 → Avance 3)
+### Próximos pasos (Avance 3 → Avance 4)
 
 - Ablación del token proxy: corrida idéntica con `spa_Latn` y con un
   vocabulario extendido, comparando chrF/chrF++ promedio.
