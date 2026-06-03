@@ -1,0 +1,388 @@
+"""Fine-tuning de M2M-100 (418M) sobre el corpus bribri<->español.
+
+Modelo de COMPARACIÓN contra NLLB-200-distilled-600M para el Avance del
+Proyecto Integrador (Tec de Monterrey).
+
+Este archivo es un ESPEJO INTENCIONAL de `nllb_train.py`: misma estructura de
+Dataset, mismo bucle de entrenamiento, mismo `evaluate_split`, mismo logging a
+`metrics.json`, y —crítico para la comparación justa— LAS MISMAS MÉTRICAS
+(`voces_corpus.training.metrics.compute_translation_metrics`).
+
+DIFERENCIAS OBLIGADAS respecto a NLLB (no son decisiones de diseño, son
+restricciones del modelo):
+
+  1. Códigos de idioma. NLLB usa tokens tipo `spa_Latn` / `quy_Latn`. M2M-100
+     usa códigos ISO simples: `es` / `qu`. El proxy de bribri sigue siendo
+     QUECHUA en ambos modelos (transferencia desde lengua indígena cercana),
+     pero el identificador difiere porque los inventarios de idiomas de NLLB y
+     M2M-100 son distintos por diseño. Esto es una LIMITACIÓN A DOCUMENTAR en
+     el Avance, no un bug.
+
+  2. Forzado del idioma destino. M2M-100 usa `tokenizer.get_lang_id(code)` para
+     el `forced_bos_token_id`; NLLB usa `convert_tokens_to_ids(token)`. Mismo
+     efecto, API distinta.
+
+  3. Set del idioma fuente. M2M-100 usa `tokenizer.src_lang = code` (sin
+     `tgt_lang` en el tokenizer; el destino se fuerza en generate). NLLB setea
+     ambos.
+
+TODO LO DEMÁS es idéntico a `nllb_train.py` para que la única variable
+experimental sea el modelo.
+
+Uso:
+    python m2m100_train.py                 # corrida completa (espejo de NLLB)
+    python m2m100_train.py --dry-run       # valida el pipeline en segundos
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Optional
+
+import torch
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+from transformers import (
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    DataCollatorForSeq2Seq,
+    PreTrainedTokenizer,
+)
+
+from voces_corpus.training.metrics import compute_translation_metrics
+
+
+# =========== CONFIG ===========
+@dataclass
+class TrainConfig:
+    model_str: str = "facebook/m2m100_418M"
+    tokenizer_str: str = "facebook/m2m100_418M"
+
+    # --- IDÉNTICOS a nllb_train.py para comparación justa ---
+    lr: float = 5e-4
+    eps: float = 1e-8
+    weight_decay: float = 0.01
+    batch_size: int = 8
+    epochs: int = 3
+    bidirectional: bool = True
+    max_length: int = 256
+    log_every: int = 10
+    eval_every: int = 100
+    save_model_on_evaluation: bool = True
+    use_float16: bool = True
+    seed: int = 42
+
+    # Par del proyecto: bri <-> es
+    # NLLB:  src_lang_token="spa_Latn"  tgt_lang_token="quy_Latn"
+    # M2M100:src_lang_code ="es"        tgt_lang_code ="qu"   (quechua, mismo proxy conceptual)
+    src_lang: str = "es"
+    tgt_lang: str = "bri"
+    src_lang_code: str = "es"
+    tgt_lang_code: str = "br"  # proxy quechua para bribri (M2M-100 no tiene token propio)
+
+    train_data_path: Path = field(default=Path("data/splits/train.jsonl"))
+    val_data_path: Path = field(default=Path("data/splits/val.jsonl"))
+    test_data_path: Path = field(default=Path("data/splits/test.jsonl"))
+    output_dir: Path = field(default=Path("outputs_m2m100"))
+
+
+# =========== DATASET ===========
+# Espejo de nllb_train.py. Única diferencia: M2M-100 setea solo src_lang en el
+# tokenizer (el destino se fuerza en generate vía forced_bos_token_id).
+class TranslationDataset(Dataset):
+    def __init__(self, data, src_lang, tgt_lang, src_lang_code, tgt_lang_code,
+                 bidirectional, tokenizer: PreTrainedTokenizer, max_length):
+        self.data = data
+        self.src_lang = src_lang
+        self.tgt_lang = tgt_lang
+        self.src_lang_code = src_lang_code
+        self.tgt_lang_code = tgt_lang_code
+        self.bidirectional = bidirectional
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __getitem__(self, idx):
+        item = self.data[idx % len(self.data)]
+        if idx < len(self.data):
+            src_lang, tgt_lang = self.src_lang, self.tgt_lang
+            src_code, tgt_code = self.src_lang_code, self.tgt_lang_code
+        else:
+            src_lang, tgt_lang = self.tgt_lang, self.src_lang
+            src_code, tgt_code = self.tgt_lang_code, self.src_lang_code
+
+        # M2M-100: el idioma fuente se setea en el tokenizer; el destino se
+        # fuerza en generate(). El text_target tokeniza las labels.
+        self.tokenizer.src_lang = src_code
+        self.tokenizer.tgt_lang = tgt_code  # M2M-100 lo usa para text_target
+
+        inputs = self.tokenizer(
+            item[src_lang],
+            text_target=item[tgt_lang],
+            return_tensors="pt",
+            max_length=self.max_length,
+            truncation=True,
+        )
+        for v in inputs.values():
+            v.squeeze_(0)
+        return inputs
+
+    def __len__(self):
+        return len(self.data) * (2 if self.bidirectional else 1)
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    with path.open() as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+# =========== EVAL ===========
+# Idéntico a nllb_train.py salvo cómo se obtiene el forced_bos_token_id.
+@torch.no_grad()
+def evaluate_split(model, tokenizer, dataloader, tgt_code, device, max_length):
+    model.eval()
+    val_losses, predictions, references = [], [], []
+
+    for batch in tqdm(dataloader, desc="Evaluating", leave=False):
+        val_inputs = batch.to(device)
+        val_outputs = model(**val_inputs, use_cache=False)
+        val_losses.append(val_outputs.loss.item())
+
+        labels = val_inputs.pop("labels")
+        labels[labels == -100] = tokenizer.pad_token_id
+        batch_pred = model.generate(
+            **val_inputs,
+            forced_bos_token_id=tokenizer.get_lang_id(tgt_code),  # <-- M2M-100 API
+            max_new_tokens=max_length,
+        )
+        predictions.extend(
+            tokenizer.batch_decode(batch_pred, skip_special_tokens=True,
+                                   clean_up_tokenization_spaces=True)
+        )
+        references.extend(
+            tokenizer.batch_decode(labels, skip_special_tokens=True,
+                                   clean_up_tokenization_spaces=True)
+        )
+
+    model.train()
+    eval_loss = sum(val_losses) / max(len(val_losses), 1)
+    scores = compute_translation_metrics(predictions, references)  # MISMA función que NLLB
+    return {"eval_loss": eval_loss, **scores,
+            "predictions": predictions, "references": references}
+
+
+# =========== TRAIN ===========
+def train(cfg: TrainConfig, repo_root: Optional[Path] = None,
+          dry_run: bool = False) -> dict:
+    repo_root = Path(repo_root) if repo_root else Path.cwd()
+
+    def _resolve(p: Path) -> Path:
+        return p if p.is_absolute() else (repo_root / p)
+
+    train_path = _resolve(cfg.train_data_path)
+    val_path = _resolve(cfg.val_data_path)
+    output_dir = _resolve(cfg.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    torch.manual_seed(cfg.seed)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("[WARN] Sin GPU: esto será lentísimo.")
+
+    model = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_str).to(device)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_str)
+
+    train_data = _read_jsonl(train_path)
+    val_data = _read_jsonl(val_path)
+    if dry_run:
+        train_data = train_data[:16]
+        val_data = val_data[:8]
+        cfg.epochs = 1
+        cfg.eval_every = 4
+        print("[dry-run] 16 train / 8 val, 1 época, eval cada 4 pasos")
+    print(f"train pairs: {len(train_data)} | val pairs: {len(val_data)}")
+
+    ds_kwargs = {"tokenizer": tokenizer, "max_length": cfg.max_length}
+    train_dataset = TranslationDataset(
+        data=train_data, src_lang=cfg.src_lang, tgt_lang=cfg.tgt_lang,
+        src_lang_code=cfg.src_lang_code, tgt_lang_code=cfg.tgt_lang_code,
+        bidirectional=cfg.bidirectional, **ds_kwargs)
+    val_src2tgt = TranslationDataset(
+        data=val_data, src_lang=cfg.src_lang, tgt_lang=cfg.tgt_lang,
+        src_lang_code=cfg.src_lang_code, tgt_lang_code=cfg.tgt_lang_code,
+        bidirectional=False, **ds_kwargs)
+    val_tgt2src = TranslationDataset(
+        data=val_data, src_lang=cfg.tgt_lang, tgt_lang=cfg.src_lang,
+        src_lang_code=cfg.tgt_lang_code, tgt_lang_code=cfg.src_lang_code,
+        bidirectional=False, **ds_kwargs)
+
+    collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer, model=model, padding="longest",
+        max_length=cfg.max_length, pad_to_multiple_of=8)
+    dl_kwargs = {"batch_size": cfg.batch_size, "pin_memory": device == "cuda",
+                 "collate_fn": collator}
+    train_loader = DataLoader(train_dataset, shuffle=True, **dl_kwargs)
+    val_loader_s2t = DataLoader(val_src2tgt, shuffle=False, **dl_kwargs)
+    val_loader_t2s = DataLoader(val_tgt2src, shuffle=False, **dl_kwargs)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, eps=cfg.eps,
+                                  weight_decay=cfg.weight_decay)
+    use_amp = device == "cuda" and cfg.use_float16
+    scaler = torch.amp.GradScaler("cuda") if use_amp else None
+
+    history = {
+        "config": {k: (str(v) if isinstance(v, Path) else v)
+                   for k, v in asdict(cfg).items()},
+        "steps": [], "train_loss": [],
+        "src2tgt": {"loss": [], "spbleu": [], "chrf": [], "chrfpp": []},
+        "tgt2src": {"loss": [], "spbleu": [], "chrf": [], "chrfpp": []},
+        "avg": {"loss": [], "spbleu": [], "chrf": [], "chrfpp": []},
+    }
+    previous_best = -1.0
+    step = 0
+
+    model.train()
+    for epoch in range(cfg.epochs):
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{cfg.epochs}"):
+            optimizer.zero_grad()
+            inputs = batch.to(device)
+            ctx = torch.amp.autocast("cuda", dtype=torch.float16) if use_amp else nullcontext()
+            with ctx:
+                outputs = model(**inputs, use_cache=False)
+                loss = outputs.loss
+
+            if step % cfg.log_every == 0:
+                print(f"step {step:5d} | loss {loss.item():.4f}")
+
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+
+            if (step + 1) % cfg.eval_every == 0:
+                s2t = evaluate_split(model, tokenizer, val_loader_s2t,
+                                     cfg.tgt_lang_code, device, cfg.max_length)
+                t2s = evaluate_split(model, tokenizer, val_loader_t2s,
+                                     cfg.src_lang_code, device, cfg.max_length)
+                avg_loss = (s2t["eval_loss"] + t2s["eval_loss"]) / 2
+                avg_spbleu = (s2t["spbleu"] + t2s["spbleu"]) / 2
+                avg_chrf = (s2t["chrf"] + t2s["chrf"]) / 2
+                avg_chrfpp = (s2t["chrfpp"] + t2s["chrfpp"]) / 2
+
+                history["steps"].append(step + 1)
+                history["train_loss"].append(loss.item())
+                for key, src in (("src2tgt", s2t), ("tgt2src", t2s)):
+                    history[key]["loss"].append(src["eval_loss"])
+                    history[key]["spbleu"].append(src["spbleu"])
+                    history[key]["chrf"].append(src["chrf"])
+                    history[key]["chrfpp"].append(src["chrfpp"])
+                history["avg"]["loss"].append(avg_loss)
+                history["avg"]["spbleu"].append(avg_spbleu)
+                history["avg"]["chrf"].append(avg_chrf)
+                history["avg"]["chrfpp"].append(avg_chrfpp)
+
+                print(f"  eval @ step {step + 1}: avg_loss={avg_loss:.3f} | "
+                      f"avg_spBLEU={avg_spbleu:.2f} | avg_chrF={avg_chrf:.2f} | "
+                      f"avg_chrF++={avg_chrfpp:.2f}")
+
+                (output_dir / "metrics.json").write_text(
+                    json.dumps({k: v for k, v in history.items() if k != "config"}
+                               | {"config": history["config"]},
+                               indent=2, ensure_ascii=False))
+
+                if cfg.save_model_on_evaluation and avg_spbleu >= previous_best:
+                    previous_best = avg_spbleu
+                    save_path = output_dir / f"best_m2m100_spbleu={avg_spbleu:.2f}"
+                    model.save_pretrained(save_path)
+                    tokenizer.save_pretrained(save_path)
+
+            step += 1
+
+    final_path = output_dir / "final_m2m100"
+    model.save_pretrained(final_path)
+    tokenizer.save_pretrained(final_path)
+    (output_dir / "metrics.json").write_text(
+        json.dumps(history, indent=2, ensure_ascii=False))
+    print(f"Modelo final guardado en {final_path}")
+    return history
+
+
+# =========== TEST ===========
+def evaluate_test(cfg: TrainConfig, repo_root: Optional[Path] = None):
+    repo_root = Path(repo_root) if repo_root else Path.cwd()
+
+    def _resolve(p): return p if p.is_absolute() else (repo_root / p)
+    output_dir = _resolve(cfg.output_dir)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    final_path = output_dir / "final_m2m100"
+    model = AutoModelForSeq2SeqLM.from_pretrained(final_path).to(device)
+    tokenizer = AutoTokenizer.from_pretrained(final_path)
+
+    test_data = _read_jsonl(_resolve(cfg.test_data_path))
+    collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model,
+                                      padding="longest", max_length=cfg.max_length,
+                                      pad_to_multiple_of=8)
+
+    def loader(src_lang, tgt_lang, src_code, tgt_code):
+        ds = TranslationDataset(test_data, src_lang, tgt_lang, src_code, tgt_code,
+                                False, tokenizer, cfg.max_length)
+        return DataLoader(ds, batch_size=cfg.batch_size, shuffle=False,
+                          collate_fn=collator)
+
+    s2t = evaluate_split(model, tokenizer,
+                         loader(cfg.src_lang, cfg.tgt_lang, cfg.src_lang_code, cfg.tgt_lang_code),
+                         cfg.tgt_lang_code, device, cfg.max_length)
+    t2s = evaluate_split(model, tokenizer,
+                         loader(cfg.tgt_lang, cfg.src_lang, cfg.tgt_lang_code, cfg.src_lang_code),
+                         cfg.src_lang_code, device, cfg.max_length)
+
+    summary = {
+        "model": cfg.model_str,
+        "es->bri": {k: s2t[k] for k in ("eval_loss", "spbleu", "chrf", "chrfpp")},
+        "bri->es": {k: t2s[k] for k in ("eval_loss", "spbleu", "chrf", "chrfpp")},
+        "avg": {
+            "eval_loss": (s2t["eval_loss"] + t2s["eval_loss"]) / 2,
+            "spbleu": (s2t["spbleu"] + t2s["spbleu"]) / 2,
+            "chrf": (s2t["chrf"] + t2s["chrf"]) / 2,
+            "chrfpp": (s2t["chrfpp"] + t2s["chrfpp"]) / 2,
+        },
+        "n_test": len(test_data),
+    }
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    (output_dir / "test_metrics.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False))
+    with (output_dir / "test_predictions.jsonl").open("w") as fh:
+        for direction, r in (("es->bri", s2t), ("bri->es", t2s)):
+            for pred, ref in zip(r["predictions"], r["references"]):
+                fh.write(json.dumps({"direction": direction, "prediction": pred,
+                                     "reference": ref}, ensure_ascii=False) + "\n")
+    print(f"Guardado: {output_dir}/test_metrics.json y test_predictions.jsonl")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--epochs", type=int, default=3)
+    p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument("--skip-test", action="store_true")
+    args = p.parse_args()
+
+    cfg = TrainConfig(epochs=args.epochs, batch_size=args.batch_size)
+    if not (Path.cwd() / cfg.train_data_path).exists():
+        print(f"[ERROR] No existe {cfg.train_data_path}. Corré: python scripts/make_splits.py")
+        sys.exit(1)
+
+    train(cfg, repo_root=Path.cwd(), dry_run=args.dry_run)
+    if not args.dry_run and not args.skip_test:
+        print("\n=== Evaluación sobre TEST ===")
+        evaluate_test(cfg, repo_root=Path.cwd())
