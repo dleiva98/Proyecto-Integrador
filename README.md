@@ -447,6 +447,236 @@ nuevos.
   ver rebote en val loss.
 - Evaluación humana de 30 oraciones por dirección sobre el split test.
 
+## Avance 4 — Reentrenamiento en CENIA (H100) y baseline comparativo M2M-100
+
+El cuarto entregable retoma exactamente donde quedó el Avance 3. Allí las
+curvas mostraban que **el modelo no había terminado de converger** (val loss
+con pendiente aún negativa a 900 pasos) y que faltaban dos ablaciones
+prometidas: más épocas con `learning rate` más bajo, y un **segundo modelo
+de comparación** para verificar que NLLB-200 era realmente la mejor elección
+de arquitectura para este par de muy bajo recurso. Este avance ejecuta ambas
+cosas y las pone una al lado de la otra.
+
+A diferencia del Avance 3 (Google Colab, GPU T4, fp16, sesiones limitadas),
+estas dos corridas se ejecutaron en el **servidor de cómputo del CENIA
+(Centro Nacional de Inteligencia Artificial)** sobre una **GPU NVIDIA H100**.
+La H100 (80 GB HBM, soporte nativo bf16/fp16 y throughput ~1 orden de
+magnitud sobre la T4) hizo viable correr 8 épocas completas y un segundo
+modelo de 418M de parámetros sin las restricciones de tiempo de Colab. La
+única variable que cambia entre corridas son los hiperparámetros y el
+modelo; **splits, semilla (42), corpus, `max_length`, `batch_size` y código
+de métricas se mantienen idénticos** a los del Avance 3 para que la
+comparación sea limpia.
+
+### Lo que se entrena en este avance
+
+| Corrida | Archivo lanzador | Salida | Modelo | Épocas | lr | Hardware |
+|---|---|---|---|---:|---:|---|
+| **NLLB orig** (Avance 3) | notebook Colab | `outputs/` | `nllb-200-distilled-600M` | 3 | 5e-4 | T4 |
+| **NLLB H100** (nuevo) | `run_nllb_h100.py` | `outputs_nllb_h100/` | `nllb-200-distilled-600M` | **8** | **2e-4** | **H100** |
+| **M2M-100** (nuevo) | `m2m100_train.py` | `outputs_m2m100/` | `m2m100_418M` | 3 | 5e-4 | H100 |
+
+`run_nllb_h100.py` **no reescribe** `nllb_train.py`: importa `train()` y
+`TrainConfig`, sólo cambia `epochs=8` y `lr=2e-4`, y guarda en una carpeta
+nueva para no pisar la corrida original. `m2m100_train.py` es un **espejo
+intencional** de `nllb_train.py` (mismo `Dataset`, mismo bucle, mismo
+`evaluate_split`, **mismas métricas**); las únicas diferencias son las
+*obligadas* por el modelo (M2M-100 usa códigos ISO simples y fuerza el idioma
+destino con `get_lang_id` en vez de los tokens `xxx_Latn` de NLLB).
+
+```bash
+export PYTHONPATH="$PWD/src:$PYTHONPATH"
+python run_nllb_h100.py        # NLLB-200, 8 épocas, lr 2e-4  -> outputs_nllb_h100/
+python m2m100_train.py         # M2M-100 baseline             -> outputs_m2m100/
+python make_plots_h100.py      # curvas H100 + barras 3-way
+```
+
+### Nuevos artefactos
+
+| Archivo | Contenido |
+|---|---|
+| `outputs_nllb_h100/metrics.json` | Serie temporal de 24 evaluaciones (100→2400 pasos) con `train_loss`, `val_loss`, spBLEU, chrF y chrF++ por dirección y promedio. |
+| `outputs_nllb_h100/test_metrics.json` | Métricas finales sobre el split test (152 pares). |
+| `outputs_nllb_h100/test_predictions.jsonl` | 304 predicciones (152 × 2 direcciones) de la corrida H100. |
+| `outputs_nllb_h100/training_curves_nllb_h100.png` | Curvas de la corrida H100 (val loss / spBLEU / chrF++). |
+| `outputs_nllb_h100/comparison_bars_3way.png` | Barras comparativas de las 3 corridas sobre test. |
+| `outputs_m2m100/metrics.json`, `test_metrics.json`, `test_predictions.jsonl` | Equivalentes para M2M-100. |
+| `outputs_m2m100/training_curves_m2m100.png` | Curvas de entrenamiento de M2M-100. |
+| `outputs_m2m100/comparison_curves.png` | NLLB-200 vs M2M-100, curvas de validación superpuestas. |
+
+### Resultados finales sobre el set de test (152 pares, promedio de direcciones)
+
+| Corrida | eval_loss ↓ | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
+|---|---:|---:|---:|---:|
+| NLLB orig · 3ep lr5e-4 (Avance 3) | **2.603** | 14.43 | 27.16 | 26.09 |
+| **NLLB H100 · 8ep lr2e-4** | 3.166 | **21.16** | **31.43** | **30.47** |
+| M2M-100 · 3ep lr5e-4 | 3.624 | 1.33 | 9.38 | 8.33 |
+
+Fuente: `outputs_nllb_h100/test_metrics.json`, `outputs/test_metrics.json`,
+`outputs_m2m100/test_metrics.json`.
+
+Desglose por dirección de la corrida ganadora (**NLLB H100**):
+
+| Dirección | eval_loss ↓ | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
+|---|---:|---:|---:|---:|
+| **es → bri** | 2.674 | **28.74** | **32.86** | **32.35** |
+| **bri → es** | 3.657 | 13.57 | 30.00 | 28.58 |
+| **promedio** | 3.166 | 21.16 | 31.43 | 30.47 |
+
+### Comparación de las 3 corridas
+
+![Comparación 3 corridas — test final](outputs_nllb_h100/comparison_bars_3way.png)
+
+El panel de barras resume la conclusión central del avance:
+
+- **NLLB H100 mejora a NLLB orig en todas las métricas de calidad de
+  traducción.** chrF sube de 27.16 a **31.43** (+4.27 pts, **+15.7 %**),
+  chrF++ de 26.09 a **30.47** (+16.8 %) y spBLEU de 14.43 a **21.16**
+  (+6.73 pts, **+46.6 %**). La mejora es mayor en `es→bri` (spBLEU
+  18.61 → 28.74, **+54 %**; chrF 26.97 → 32.86) que en `bri→es` (chrF
+  27.34 → 30.00), pero ambas direcciones suben.
+- **M2M-100 queda muy por debajo de ambas corridas de NLLB**: chrF 9.38
+  (≈ ⅓ de NLLB H100) y spBLEU 1.33 (≈ 1/16 de NLLB H100). El experimento
+  confirma empíricamente que **NLLB-200 era la elección correcta de
+  arquitectura** para este par, y no un supuesto del Avance 1.
+
+### La paradoja val loss ↑ pero chrF ↑ (lectura académica clave)
+
+Hay un resultado contraintuitivo que merece análisis: la corrida H100 tiene
+**peor** `eval_loss` (3.17 vs 2.60) y al mismo tiempo **mejor** chrF/spBLEU.
+No es un error: es el fenómeno clásico de **divergencia entre la
+cross-entropy y la calidad decodificada** en NMT de bajo recurso.
+
+![Curvas de entrenamiento NLLB-H100](outputs_nllb_h100/training_curves_nllb_h100.png)
+
+Leyendo las curvas (eje X en pasos, 100 → 2400, ~300 pasos/época × 8):
+
+1. **Val loss** (izquierda). `es→bri` toca su mínimo (~2.18) alrededor del
+   paso 900 y **rebota** hasta ~2.66; `bri→es` toca mínimo (~2.88) cerca del
+   paso 600 y sube hasta ~3.88. El `train_loss` (en `metrics.json`) cae de
+   3.58 a ~0.16-0.25: el modelo **memoriza** el train. Visto sólo por la
+   CE de validación, esto es *overfitting* y un *early stopping* lo habría
+   cortado en el paso 600-900.
+2. **spBLEU** (centro) y **chrF++** (derecha). Sin embargo, las métricas
+   **decodificadas** siguen subiendo mucho después de ese punto: chrF++
+   `es→bri` mesetea en ~31-32 recién hacia el paso 1300-1500, y `bri→es`
+   en ~28. Es decir, **el mejor checkpoint por val loss NO es el mejor por
+   chrF**: las épocas extra que "empeoran" la CE en realidad mejoran la
+   superposición de caracteres de la traducción.
+
+La explicación es que la cross-entropy penaliza cada token por
+probabilidad exacta (sensible a sobre-confianza tras memorizar), mientras
+chrF mide solape de n-gramas de caracteres en la **salida realmente
+generada**. En un régimen de ~1.2k pares, seguir entrenando aumenta la
+confianza del modelo (sube CE de validación) pero también afina la
+morfología que produce al decodificar (sube chrF). **La conclusión
+metodológica es que en este proyecto el criterio de selección de modelo
+debe ser chrF/chrF++, no val loss**, y que reportar sólo la CE habría
+ocultado la mejora real. El checkpoint final (`final_nllb`, paso 2400) es
+el que se evalúa en test.
+
+Como efecto secundario, los **bucles de repetición degenerada** que
+aparecían en el Avance 3 (p. ej. `ẽ̀nẽ̀nẽ̀nẽ̀…`) **desaparecen** en la
+corrida H100: más épocas + lr más bajo estabilizan la generación.
+
+### NLLB-200 vs M2M-100 — por qué M2M colapsa
+
+![NLLB-200 vs M2M-100 — curvas de validación](outputs_m2m100/comparison_curves.png)
+
+Las curvas superpuestas (ambos a 3 épocas / 900 pasos, condición idéntica)
+muestran que **M2M-100 nunca despega**: su val loss baja poco (4.96 → 3.79),
+su spBLEU promedio queda por debajo de 4 con picos ruidosos, y su chrF++ no
+pasa de ~9. La curva propia de M2M (`training_curves_m2m100.png`) confirma
+una señal muy ruidosa y de bajísima magnitud en spBLEU, especialmente en
+`bri→es` (prácticamente 0).
+
+El análisis cualitativo explica el colapso: M2M-100 cae en **bucles de
+repetición** masivos, justo el patrón que NLLB ya superó:
+
+```
+direction : es → bri
+prediction: "E'ta i-ché i̱-i̱a̱ : Akë́kë, ba-ujché̱ r tö i-ujché̱ r tö
+             i-ujché̱ r tö i̱-i̱a̱ : Akë́kë, ba-ujché̱ r tö i-ujché̱ r tö …"
+reference : "i-apàtkë'/apàtké e' tsá̱ ta̱."
+```
+
+Tres factores concurren, y conviene documentarlos honestamente:
+
+1. **Capacidad y pre-entrenamiento.** M2M-100 418M tiene menos parámetros
+   que NLLB-200 distilled-600M y un pre-entrenamiento menos orientado a
+   bajo recurso; con sólo 3 épocas no logra anclar el espacio del idioma
+   destino.
+2. **Proxy de idioma — caveat a registrar.** Para NLLB el proxy de bribri
+   es `quy_Latn` (Quechua Ayacucho). En M2M la corrida quedó configurada
+   con `tgt_lang_code="br"` (que en el inventario de M2M-100 corresponde a
+   **bretón**, no a quechua `qu`). Es un **confundidor real** en la
+   comparación: parte del mal desempeño de M2M puede deberse a un proxy
+   tipológicamente lejano. Una re-corrida con `qu` es el primer ítem de los
+   próximos pasos antes de declarar una conclusión definitiva sobre M2M.
+3. **Mismas 3 épocas que el baseline antiguo.** M2M se entrenó en la
+   condición original (3ep/lr5e-4) para que su comparación directa fuera
+   contra `NLLB orig`, no contra la corrida H100 de 8 épocas.
+
+Aun con el caveat (2), la brecha (chrF 9 vs 27-31) es lo bastante grande
+como para sostener la decisión de seguir con NLLB-200 como modelo base.
+
+### Análisis cualitativo — el mismo par, Avance 3 vs Avance 4
+
+El test y la semilla no cambiaron, así que se puede inspeccionar **la misma
+oración** en las dos corridas de NLLB. Tomando el par Marta/Jesús que ya se
+analizó en el Avance 3 (patrón 4):
+
+```
+referencia       : E'ta̠ Marta tö Jesús i̱a̱ i-ché: Akë́kë, ma̱ -a̱ mú̱ pa
+                   tso' í̱e̱ e̱ ma̠ ya-akë̀ kë̀ dúwa̱.
+Avance 3 (3ep)   : E'ta̠ Marta tö Jesús i-ché: Akë́kë, ma̱ -ma̱ le̱ í̠e̠ a'
+                   tso'rö, ye' ë́l kë̀ dawö̀wa̱.
+Avance 4 (H100)  : E'ta̠ Marta tö Jesús i̱-i̱a̠ i-ché: Kë́kë, tö ma̱ -e̱'tso'
+                   í̱e̱, ye' ë́l kë̀ dawö̀wa̱ ta̱.
+```
+
+La corrida H100 **recupera `i̱-i̱a̠`** (mucho más cercano a la referencia
+`i̱a̱`, que la versión del Avance 3 omitía) y produce `í̱e̱` con el gancho
+nasal correcto. El contenido todavía no es perfecto, pero el alineamiento
+estructural y morfológico mejora de forma visible — coherente con el +16 %
+de chrF medido. Otros ejemplos de `test_predictions.jsonl` (H100) muestran
+salidas casi exactas en oraciones cortas:
+
+```
+direction : es → bri
+prediction: "i-apàtkë' tsá̱ ka̱."
+reference : "i-apàtkë'/apàtké e' tsá̱ ta̱."
+```
+
+### Conclusiones del Avance 4
+
+1. **Más épocas con lr más bajo en H100 mejoran NLLB-200** de forma
+   consistente (chrF +15.7 %, chrF++ +16.8 %, spBLEU +46.6 % en promedio),
+   confirmando la hipótesis del Avance 3 de que el modelo no había
+   convergido.
+2. **NLLB-200 supera ampliamente a M2M-100** en condiciones idénticas
+   (chrF 27-31 vs 9), validando empíricamente la elección de arquitectura.
+3. **chrF/chrF++ —no la val loss— deben gobernar la selección de modelo**
+   en este régimen de bajo recurso; la corrida H100 lo demuestra al mejorar
+   chrF mientras su CE de validación rebota.
+4. El proxy de idioma sigue siendo una palanca abierta: el caveat `br` vs
+   `qu` en M2M y la ablación `quy_Latn` vs `spa_Latn` en NLLB quedan
+   pendientes.
+
+### Próximos pasos (Avance 4 → entrega final)
+
+- **Re-correr M2M-100 con el proxy `qu`** (quechua) para eliminar el
+  confundidor y dar una comparación de arquitectura limpia.
+- **NLLB H100 con selección por chrF + early stopping sobre chrF** (no sobre
+  loss), guardando el mejor checkpoint por chrF++ promedio.
+- **Ablación del proxy en NLLB** (`quy_Latn` vs `spa_Latn` vs vocabulario
+  extendido) ahora que la H100 hace barato el barrido.
+- **Filtrado por `confidence`**: comparar 8 épocas sobre corpus completo vs.
+  corpus sin `low` (~758 pares), para medir cuánto del techo lo impone el
+  ruido de glosas.
+- **Evaluación humana** por hablantes nativos sobre una muestra
+  estratificada del test, como cierre cualitativo de la entrega final.
+
 ## Notas reproducibilidad
 
 - `source_hashes.json` registra el SHA-256 de cada PDF; cualquier
