@@ -677,6 +677,156 @@ reference : "i-apàtkë'/apàtké e' tsá̱ ta̱."
 - **Evaluación humana** por hablantes nativos sobre una muestra
   estratificada del test, como cierre cualitativo de la entrega final.
 
+## Avance 5 — Ensambles, checkpointing robusto y escalamiento a NLLB-200 3.3B
+
+La rúbrica de este entregable pide modelos de ensamble, optimización de
+hiperparámetros, comparación contra modelos individuales y gráficos de
+interpretación. En este proyecto el problema no es clasificación tabular sino
+**traducción automática neuronal** (`seq2seq`), por lo que ROC, matriz de
+confusión, precisión-recall o importancia de variables no son métricas
+centrales. La adaptación metodológica es:
+
+- tratar los modelos previos como generadores candidatos de traducción;
+- construir ensambles como **blending/selección de candidatos** a nivel de
+  salida;
+- conservar `chrF++` promedio como métrica primaria porque el Avance 4 mostró
+  que val loss y calidad decodificada divergen;
+- reportar `spBLEU`, `chrF`, `chrF++` y tiempo/costo operacional cuando está
+  disponible;
+- usar curvas de entrenamiento, barras comparativas y análisis cualitativo de
+  degeneración como gráficos interpretables para NMT.
+
+### Cambios implementados para el Avance 5
+
+1. `src/voces_corpus/training/nllb_train.py` ahora soporta:
+   - checkpoint reanudable en `output_dir/checkpoint-last`;
+   - restauración de pesos, tokenizador, optimizador, AMP scaler, historial,
+     época, batch y paso global;
+   - `resume_if_checkpoint_exists=True` para reiniciar Colab desde el último
+     estado válido;
+   - `gradient_accumulation_steps` para mantener batch efectivo sin exigir el
+     mismo batch físico;
+   - selección de mejor checkpoint por `best_metric="chrfpp"`;
+   - `wall_time_seconds` en `metrics.json` para registrar tiempos en corridas
+     nuevas;
+   - `optimizer_name="adamw_bnb_8bit"` para corridas grandes en A100.
+2. `notebooks/nllb_finetuned_3_3b_colab.ipynb` queda preparado para Colab Pro+
+   con A100 y `facebook/nllb-200-3.3B`.
+3. `scripts/evaluate_prediction_ensembles.py` genera ensambles ligeros a partir
+   de las predicciones existentes y escribe resultados en `outputs_ensembles/`.
+
+### Corrida Colab 3.3B propuesta
+
+La nueva notebook mantiene los parámetros comparables del baseline:
+
+| Parámetro | Valor |
+|---|---:|
+| Modelo | `facebook/nllb-200-3.3B` |
+| Épocas | 3 |
+| Learning rate | `5e-4` |
+| `max_length` | 256 |
+| Semilla | 42 |
+| Batch efectivo | 8 |
+| Micro-batch físico | 1 |
+| Acumulación de gradiente | 8 |
+| Precisión | bf16 |
+| Optimizador | AdamW 8-bit |
+| Checkpoint | cada 100 pasos de optimizador |
+| Criterio de mejor checkpoint | `chrF++` promedio en validación |
+
+El micro-batch físico baja a 1 porque full fine-tuning de 3.3B con batch físico
+8 no es realista en Colab; `gradient_accumulation_steps=8` conserva el batch
+efectivo y por tanto la comparabilidad experimental. La salida se guarda en
+Google Drive bajo `proyecto-integrador-avance5/outputs_nllb_3_3b/`. Si Colab se
+desconecta, basta volver a ejecutar la notebook: `train()` detecta
+`checkpoint-last` y continúa desde el estado guardado.
+
+### Ensambles evaluados
+
+Se generaron tres estrategias sobre las predicciones existentes:
+
+- **Blend homogéneo NLLB anti-degeneración**: usa NLLB H100 como candidato por
+  defecto y cae a NLLB original sólo cuando detecta repetición degenerada.
+- **Blend heterogéneo NLLB+M2M anti-degeneración**: elige entre NLLB H100, NLLB
+  original y M2M-100 con una regla sin referencia basada en repetición y
+  longitud relativa.
+- **Oracle de candidatos NLLB+M2M**: cota superior no desplegable; usa la
+  referencia para elegir el mejor candidato por segmento y cuantificar el techo
+  posible de un reranker perfecto.
+
+Comando reproducible:
+
+```bash
+PYTHONPATH=src python scripts/evaluate_prediction_ensembles.py
+```
+
+Salida principal:
+
+| Modelo | Tipo | Hardware | Tiempo | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
+| --- | --- | --- | --- | ---: | ---: | ---: |
+| Oracle de candidatos NLLB+M2M (cota superior no desplegable) | oracle / upper bound | H100 + T4 | usa referencia; no desplegable | 22.15 | 34.30 | 33.30 |
+| Blend homogéneo NLLB anti-degeneración | ensamble homogéneo | H100 + T4 | post-proceso; sin reentrenar | 21.25 | 31.61 | 30.66 |
+| NLLB H100 · 600M · 8ep lr2e-4 | individual | H100 | no registrado | 21.16 | 31.43 | 30.47 |
+| Blend heterogéneo NLLB+M2M anti-degeneración | ensamble heterogéneo | H100 + T4 | post-proceso; sin reentrenar | 17.13 | 28.14 | 26.98 |
+| NLLB orig · 600M · 3ep lr5e-4 | individual | Colab T4 | 30-45 min reportado | 14.43 | 27.16 | 26.09 |
+| M2M-100 · 418M · 3ep lr5e-4 | individual | H100 | no registrado | 1.33 | 9.38 | 8.33 |
+
+Fuente: `outputs_ensembles/comparison_table.md`,
+`outputs_ensembles/ensemble_metrics.json` y métricas individuales previas.
+
+### Interpretación
+
+El **blend homogéneo NLLB** mejora ligeramente al mejor modelo individual:
+`chrF++` sube de 30.47 a **30.66** (+0.19), `chrF` de 31.43 a **31.61** y
+`spBLEU` de 21.16 a **21.25**. La mejora es pequeña, pero coherente: el
+ensamble no intenta promediar logits ni reentrenar; sólo reemplaza salidas
+detectadas como degeneradas con una segunda corrida NLLB.
+
+El **blend heterogéneo NLLB+M2M** empeora frente a NLLB H100. La razón es
+consistente con el Avance 4: M2M-100 produce muchas repeticiones largas y su
+calidad promedio es demasiado baja para aportar diversidad útil. En ensambles,
+la diversidad sólo ayuda si los errores son parcialmente complementarios; aquí
+M2M introduce ruido sistemático.
+
+El **oracle** alcanza `chrF++=33.30`, lo que muestra que sí existe margen si se
+entrena un reranker real. Sin embargo, no es un modelo desplegable porque usa la
+referencia de test para decidir. Su valor es diagnóstico: cuantifica el techo de
+selección entre candidatos ya entrenados.
+
+### Modelo final elegido
+
+Para fines operativos, el modelo final recomendado sigue siendo **NLLB H100 ·
+600M · 8ep lr2e-4**:
+
+- es el mejor modelo individual validado;
+- evita mantener dos checkpoints en producción por una ganancia marginal de
+  `chrF++=+0.19`;
+- no depende de reglas heurísticas de post-proceso;
+- ya eliminó los bucles degenerados que aparecían en Avance 3;
+- es más barato y simple que NLLB-200 3.3B mientras la corrida 3.3B no tenga
+  resultados medidos.
+
+Si el objetivo inmediato fuera maximizar exclusivamente la métrica automática,
+el **blend homogéneo NLLB** sería la variante ganadora desplegable. Para el
+objetivo de negocio del proyecto —un traductor experimental reproducible,
+auditable y mantenible para una lengua de muy bajo recurso— la mejora marginal
+no justifica aún la complejidad adicional.
+
+### Gráficos aplicables
+
+Los gráficos relevantes para esta naturaleza de problema son:
+
+- curvas de entrenamiento (`val loss`, `spBLEU`, `chrF++`) ya generadas para
+  NLLB y M2M;
+- barras comparativas de métricas finales entre modelos;
+- análisis cualitativo de predicciones y detección de bucles degenerados;
+- para la corrida 3.3B, `notebooks/nllb_finetuned_3_3b_colab.ipynb` genera
+  `training_curves.png` en Drive.
+
+ROC, precisión-recall y matriz de confusión no se reportan porque requerirían
+convertir artificialmente la traducción en clasificación, perdiendo la señal
+principal de calidad de secuencia.
+
 ## Notas reproducibilidad
 
 - `source_hashes.json` registra el SHA-256 de cada PDF; cualquier

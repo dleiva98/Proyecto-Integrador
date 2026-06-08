@@ -1,4 +1,4 @@
-"""Fine-tuning de NLLB-200-distilled-600M sobre el corpus bribri<->español.
+"""Fine-tuning de NLLB-200 sobre el corpus bribri<->español.
 
 Adaptado del template oficial del Proyecto Integrador (a9c6fdf2-nllb_training.py).
 
@@ -9,17 +9,20 @@ Cambios respecto al template:
 - Carga splits desde `data/splits/{train,val,test}.jsonl`.
 - Loguea train_losses, val_losses (src2tgt, tgt2src, avg), spBLEU, chrF y
   chrF++ a `outputs/metrics.json` cada `EVAL_EVERY` pasos.
+- Guarda checkpoints reanudables con estado de modelo, tokenizador,
+  optimizador, scaler AMP, historial y posición del entrenamiento.
 - `tqdm` no-notebook por defecto.
 - Pensado para ejecutarse en Colab con GPU; ver `notebooks/nllb_finetune_colab.ipynb`.
 """
 from __future__ import annotations
 
 import json
-import os
+import random
+import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -52,9 +55,16 @@ class TrainConfig:
     log_every: int = 10
     eval_every: int = 100
     save_model_on_evaluation: bool = True
+    best_metric: str = "chrfpp"
+    checkpoint_every: int = 100
+    resume_from_checkpoint: Optional[Path] = None
+    resume_if_checkpoint_exists: bool = False
+    gradient_accumulation_steps: int = 1
 
     use_float16: bool = True
+    use_bfloat16: bool = False
     seed: int = 42
+    optimizer_name: str = "adamw_torch"  # adamw_torch | adamw_bnb_8bit
 
     # Par del proyecto: bri <-> es
     src_lang: str = "es"
@@ -170,11 +180,102 @@ def _json_default(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+def _set_reproducible_seed(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
-def _json_default(obj):
-    if isinstance(obj, Path):
-        return str(obj)
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+def _make_optimizer(model, cfg: TrainConfig):
+    if cfg.optimizer_name == "adamw_torch":
+        return torch.optim.AdamW(model.parameters(), lr=cfg.lr, eps=cfg.eps, weight_decay=cfg.weight_decay)
+    if cfg.optimizer_name == "adamw_bnb_8bit":
+        try:
+            import bitsandbytes as bnb
+        except ImportError as exc:
+            raise ImportError(
+                "optimizer_name='adamw_bnb_8bit' requiere instalar bitsandbytes. "
+                "En Colab: %pip install -q bitsandbytes"
+            ) from exc
+        return bnb.optim.AdamW8bit(model.parameters(), lr=cfg.lr, eps=cfg.eps, weight_decay=cfg.weight_decay)
+    raise ValueError(f"optimizer_name no soportado: {cfg.optimizer_name}")
+
+
+def _checkpoint_state_path(checkpoint_dir: Path) -> Path:
+    return checkpoint_dir / "training_state.pt"
+
+
+def _checkpoint_meta_path(checkpoint_dir: Path) -> Path:
+    return checkpoint_dir / "trainer_state.json"
+
+
+def _save_metrics(output_dir: Path, history: dict[str, Any]) -> None:
+    (output_dir / "metrics.json").write_text(
+        json.dumps(history, indent=2, ensure_ascii=False, default=_json_default)
+    )
+
+
+def _save_training_checkpoint(
+    checkpoint_dir: Path,
+    model,
+    tokenizer,
+    optimizer,
+    scaler,
+    cfg: TrainConfig,
+    history: dict[str, Any],
+    *,
+    next_epoch: int,
+    next_batch_idx: int,
+    step: int,
+    best_score: float,
+    started_at: float,
+) -> None:
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(checkpoint_dir)
+    tokenizer.save_pretrained(checkpoint_dir)
+    state = {
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict() if scaler is not None else None,
+        "history": history,
+        "next_epoch": next_epoch,
+        "next_batch_idx": next_batch_idx,
+        "step": step,
+        "best_score": best_score,
+        "started_at": started_at,
+        "elapsed_seconds": time.time() - started_at,
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+    torch.save(state, _checkpoint_state_path(checkpoint_dir))
+    meta = {
+        "next_epoch": next_epoch,
+        "next_batch_idx": next_batch_idx,
+        "step": step,
+        "best_metric": cfg.best_metric,
+        "best_score": best_score,
+        "elapsed_seconds": state["elapsed_seconds"],
+        "model_str": cfg.model_str,
+        "tokenizer_str": cfg.tokenizer_str,
+    }
+    _checkpoint_meta_path(checkpoint_dir).write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+
+
+def _load_training_state(checkpoint_dir: Path, device: str) -> dict[str, Any]:
+    return torch.load(_checkpoint_state_path(checkpoint_dir), map_location=device)
+
+
+def _resolve_resume_checkpoint(cfg: TrainConfig, output_dir: Path, repo_root: Path) -> Optional[Path]:
+    if cfg.resume_from_checkpoint is not None:
+        p = cfg.resume_from_checkpoint
+        return p if p.is_absolute() else (repo_root / p)
+    candidate = output_dir / "checkpoint-last"
+    if cfg.resume_if_checkpoint_exists and _checkpoint_state_path(candidate).exists():
+        return candidate
+    return None
+
 
 def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
     repo_root = Path(repo_root) if repo_root else Path.cwd()
@@ -187,12 +288,26 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
     output_dir = _resolve(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    torch.manual_seed(cfg.seed)
+    if cfg.gradient_accumulation_steps < 1:
+        raise ValueError("gradient_accumulation_steps debe ser >= 1")
+
+    _set_reproducible_seed(cfg.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    model = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_str).to(device)
-    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_str)
+    resume_checkpoint = _resolve_resume_checkpoint(cfg, output_dir, repo_root)
+    if resume_checkpoint is not None:
+        print(f"Reanudando desde checkpoint: {resume_checkpoint}")
+        model = AutoModelForSeq2SeqLM.from_pretrained(resume_checkpoint).to(device)
+        tokenizer = AutoTokenizer.from_pretrained(resume_checkpoint)
+    else:
+        model = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_str).to(device)
+        tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_str)
+
+    if hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
+        if hasattr(model.config, "use_cache"):
+            model.config.use_cache = False
 
     train_data = _read_jsonl(train_path)
     val_data = _read_jsonl(val_path)
@@ -232,13 +347,18 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
         max_length=cfg.max_length, pad_to_multiple_of=8,
     )
     dl_kwargs = {"batch_size": cfg.batch_size, "pin_memory": device == "cuda", "collate_fn": collator}
-    train_loader = DataLoader(train_dataset, shuffle=True, **dl_kwargs)
     val_loader_s2t = DataLoader(val_src2tgt, shuffle=False, **dl_kwargs)
     val_loader_t2s = DataLoader(val_tgt2src, shuffle=False, **dl_kwargs)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, eps=cfg.eps, weight_decay=cfg.weight_decay)
-    use_amp = device == "cuda" and cfg.use_float16
-    scaler = torch.amp.GradScaler("cuda") if use_amp else None
+    def make_train_loader(epoch: int) -> DataLoader:
+        generator = torch.Generator()
+        generator.manual_seed(cfg.seed + epoch)
+        return DataLoader(train_dataset, shuffle=True, generator=generator, **dl_kwargs)
+
+    optimizer = _make_optimizer(model, cfg)
+    use_fp16 = device == "cuda" and cfg.use_float16 and not cfg.use_bfloat16
+    use_bf16 = device == "cuda" and cfg.use_bfloat16
+    scaler = torch.amp.GradScaler("cuda") if use_fp16 else None
 
     history = {
         "config": asdict(cfg),
@@ -248,31 +368,77 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
         "tgt2src": {"loss": [], "spbleu": [], "chrf": [], "chrfpp": []},
         "avg": {"loss": [], "spbleu": [], "chrf": [], "chrfpp": []},
     }
-    previous_best = -1.0
+    best_score = float("-inf")
     step = 0
+    start_epoch = 0
+    start_batch_idx = 0
+    started_at = time.time()
+
+    if resume_checkpoint is not None:
+        state = _load_training_state(resume_checkpoint, device)
+        optimizer.load_state_dict(state["optimizer"])
+        if scaler is not None and state.get("scaler") is not None:
+            scaler.load_state_dict(state["scaler"])
+        history = state.get("history", history)
+        step = int(state.get("step", 0))
+        best_score = float(state.get("best_score", float("-inf")))
+        start_epoch = int(state.get("next_epoch", 0))
+        start_batch_idx = int(state.get("next_batch_idx", 0))
+        if state.get("torch_rng_state") is not None:
+            torch.set_rng_state(state["torch_rng_state"])
+        if torch.cuda.is_available() and state.get("cuda_rng_state_all") is not None:
+            torch.cuda.set_rng_state_all(state["cuda_rng_state_all"])
+        started_at = time.time() - float(state.get("elapsed_seconds", 0.0))
+        print(f"Estado restaurado: epoch={start_epoch}, batch={start_batch_idx}, step={step}")
 
     model.train()
-    for epoch in range(cfg.epochs):
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{cfg.epochs}"):
-            optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
+    for epoch in range(start_epoch, cfg.epochs):
+        train_loader = make_train_loader(epoch)
+        total_batches = len(train_loader)
+        for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}/{cfg.epochs}")):
+            if epoch == start_epoch and batch_idx < start_batch_idx:
+                continue
+
             inputs = batch.to(device)
-            ctx = torch.amp.autocast("cuda", dtype=torch.float16) if use_amp else nullcontext()
+            if use_fp16:
+                ctx = torch.amp.autocast("cuda", dtype=torch.float16)
+            elif use_bf16:
+                ctx = torch.amp.autocast("cuda", dtype=torch.bfloat16)
+            else:
+                ctx = nullcontext()
             with ctx:
                 outputs = model(**inputs, use_cache=False)
-                loss = outputs.loss
+                raw_loss = outputs.loss
+                loss = raw_loss / cfg.gradient_accumulation_steps
 
             if step % cfg.log_every == 0:
-                print(f"step {step:5d} | loss {loss.item():.4f}")
+                print(f"step {step:5d} | loss {raw_loss.item():.4f}")
 
-            if use_amp:
+            if use_fp16:
                 scaler.scale(loss).backward()
+            else:
+                loss.backward()
+
+            should_step = (
+                (batch_idx + 1) % cfg.gradient_accumulation_steps == 0
+                or batch_idx + 1 == total_batches
+            )
+            if not should_step:
+                continue
+
+            if use_fp16:
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                loss.backward()
                 optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            step += 1
 
-            if (step + 1) % cfg.eval_every == 0:
+            should_evaluate = cfg.eval_every > 0 and step % cfg.eval_every == 0
+            should_checkpoint = cfg.checkpoint_every > 0 and step % cfg.checkpoint_every == 0
+
+            if should_evaluate:
                 s2t = evaluate_split(model, tokenizer, val_loader_s2t, cfg.tgt_lang_token, device, cfg.max_length)
                 t2s = evaluate_split(model, tokenizer, val_loader_t2s, cfg.src_lang_token, device, cfg.max_length)
 
@@ -281,8 +447,8 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
                 avg_chrf = (s2t["chrf"] + t2s["chrf"]) / 2
                 avg_chrfpp = (s2t["chrfpp"] + t2s["chrfpp"]) / 2
 
-                history["steps"].append(step + 1)
-                history["train_loss"].append(loss.item())
+                history["steps"].append(step)
+                history["train_loss"].append(raw_loss.item())
                 for key, src in (("src2tgt", s2t), ("tgt2src", t2s)):
                     history[key]["loss"].append(src["eval_loss"])
                     history[key]["spbleu"].append(src["spbleu"])
@@ -294,28 +460,53 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
                 history["avg"]["chrfpp"].append(avg_chrfpp)
 
                 print(
-                    f"  eval @ step {step + 1}: "
+                    f"  eval @ step {step}: "
                     f"avg_loss={avg_loss:.3f} | avg_spBLEU={avg_spbleu:.2f} | "
                     f"avg_chrF={avg_chrf:.2f} | avg_chrF++={avg_chrfpp:.2f}"
                 )
 
-                (output_dir / "metrics.json").write_text(
-                    json.dumps({k: v for k, v in history.items() if k != "config"} | {"config": history["config"]},
-                               indent=2, ensure_ascii=False, default=_json_default)
-                )
+                history["wall_time_seconds"] = time.time() - started_at
+                _save_metrics(output_dir, history)
 
-                if cfg.save_model_on_evaluation and avg_spbleu >= previous_best:
-                    previous_best = avg_spbleu
-                    save_path = output_dir / f"best_nllb_spbleu={avg_spbleu:.2f}"
+                metric_values = {
+                    "loss": -avg_loss,
+                    "spbleu": avg_spbleu,
+                    "chrf": avg_chrf,
+                    "chrfpp": avg_chrfpp,
+                }
+                if cfg.best_metric not in metric_values:
+                    raise ValueError(f"best_metric no soportada: {cfg.best_metric}")
+                current_score = metric_values[cfg.best_metric]
+                if cfg.save_model_on_evaluation and current_score >= best_score:
+                    best_score = current_score
+                    printable_score = -current_score if cfg.best_metric == "loss" else current_score
+                    save_path = output_dir / f"best_nllb_{cfg.best_metric}={printable_score:.2f}"
                     model.save_pretrained(save_path)
                     tokenizer.save_pretrained(save_path)
 
-            step += 1
+            if should_checkpoint or should_evaluate:
+                next_epoch = epoch + 1 if batch_idx + 1 == total_batches else epoch
+                next_batch_idx = 0 if batch_idx + 1 == total_batches else batch_idx + 1
+                _save_training_checkpoint(
+                    output_dir / "checkpoint-last",
+                    model,
+                    tokenizer,
+                    optimizer,
+                    scaler,
+                    cfg,
+                    history,
+                    next_epoch=next_epoch,
+                    next_batch_idx=next_batch_idx,
+                    step=step,
+                    best_score=best_score,
+                    started_at=started_at,
+                )
 
     final_path = output_dir / "final_nllb"
     model.save_pretrained(final_path)
     tokenizer.save_pretrained(final_path)
-    (output_dir / "metrics.json").write_text(json.dumps(history, indent=2, ensure_ascii=False, default=_json_default))
+    history["wall_time_seconds"] = time.time() - started_at
+    _save_metrics(output_dir, history)
     print(f"Modelo final guardado en {final_path}")
     return history
 
