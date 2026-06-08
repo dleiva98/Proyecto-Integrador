@@ -731,15 +731,21 @@ La nueva notebook mantiene los parámetros comparables del baseline:
 | Acumulación de gradiente | 8 |
 | Precisión | bf16 |
 | Optimizador | AdamW 8-bit |
+| Requisito de hardware | A100 con al menos 39 GiB de VRAM |
 | Checkpoint | cada 100 pasos de optimizador |
 | Criterio de mejor checkpoint | `chrF++` promedio en validación |
 
 El micro-batch físico baja a 1 porque full fine-tuning de 3.3B con batch físico
 8 no es realista en Colab; `gradient_accumulation_steps=8` conserva el batch
-efectivo y por tanto la comparabilidad experimental. La salida se guarda en
-Google Drive bajo `proyecto-integrador-avance5/outputs_nllb_3_3b/`. Si Colab se
-desconecta, basta volver a ejecutar la notebook: `train()` detecta
-`checkpoint-last` y continúa desde el estado guardado.
+efectivo y por tanto la comparabilidad experimental. La notebook valida antes
+de cargar el modelo que Colab haya asignado una **A100 con al menos 39 GiB**;
+si el runtime entrega una GPU menor (por ejemplo L4/T4 de ~22 GiB), aborta sin
+entrenar para evitar OOM. No hay fallback automático a QLoRA ni a una GPU
+menor. La salida se guarda en Google Drive bajo
+`proyecto-integrador-avance5/outputs_nllb_3_3b/`. Si Colab se desconecta, basta
+volver a ejecutar la notebook: `train()` detecta `checkpoint-last` y continúa
+desde el estado guardado, siempre que el nuevo runtime también cumpla el
+requisito de A100.
 
 ### Ensambles evaluados
 

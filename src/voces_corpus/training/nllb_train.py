@@ -65,6 +65,8 @@ class TrainConfig:
     use_bfloat16: bool = False
     seed: int = 42
     optimizer_name: str = "adamw_torch"  # adamw_torch | adamw_bnb_8bit
+    required_gpu_name: Optional[str] = None
+    min_cuda_memory_gb: Optional[float] = None
 
     # Par del proyecto: bri <-> es
     src_lang: str = "es"
@@ -204,6 +206,51 @@ def _make_optimizer(model, cfg: TrainConfig):
     raise ValueError(f"optimizer_name no soportado: {cfg.optimizer_name}")
 
 
+def _validate_hardware_requirements(cfg: TrainConfig, device: str) -> None:
+    if cfg.required_gpu_name is None and cfg.min_cuda_memory_gb is None:
+        return
+    if device != "cuda":
+        raise RuntimeError(
+            "Esta corrida requiere GPU CUDA, pero el runtime actual no tiene CUDA disponible."
+        )
+
+    gpu_name = torch.cuda.get_device_name(0)
+    total_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    print(f"GPU detectada: {gpu_name} | VRAM total: {total_gb:.1f} GiB")
+
+    if cfg.required_gpu_name and cfg.required_gpu_name.lower() not in gpu_name.lower():
+        raise RuntimeError(
+            f"GPU insuficiente: se requiere una GPU que contenga '{cfg.required_gpu_name}' "
+            f"en el nombre, pero Colab asignó '{gpu_name}'. "
+            "Cambia el runtime de Colab a A100 antes de ejecutar esta celda."
+        )
+
+    if cfg.min_cuda_memory_gb is not None and total_gb < cfg.min_cuda_memory_gb:
+        raise RuntimeError(
+            f"VRAM insuficiente: se requieren al menos {cfg.min_cuda_memory_gb:.1f} GiB, "
+            f"pero la GPU actual tiene {total_gb:.1f} GiB. "
+            "No se continuará para evitar OOM."
+        )
+
+
+def _torch_dtype_for_model(cfg: TrainConfig, device: str):
+    if device != "cuda":
+        return None
+    if cfg.use_bfloat16:
+        return torch.bfloat16
+    if cfg.use_float16:
+        return torch.float16
+    return None
+
+
+def _load_seq2seq_model(model_path: str | Path, cfg: TrainConfig, device: str):
+    kwargs = {}
+    torch_dtype = _torch_dtype_for_model(cfg, device)
+    if torch_dtype is not None:
+        kwargs["torch_dtype"] = torch_dtype
+    return AutoModelForSeq2SeqLM.from_pretrained(model_path, **kwargs).to(device)
+
+
 def _checkpoint_state_path(checkpoint_dir: Path) -> Path:
     return checkpoint_dir / "training_state.pt"
 
@@ -294,14 +341,15 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
     _set_reproducible_seed(cfg.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
+    _validate_hardware_requirements(cfg, device)
 
     resume_checkpoint = _resolve_resume_checkpoint(cfg, output_dir, repo_root)
     if resume_checkpoint is not None:
         print(f"Reanudando desde checkpoint: {resume_checkpoint}")
-        model = AutoModelForSeq2SeqLM.from_pretrained(resume_checkpoint).to(device)
+        model = _load_seq2seq_model(resume_checkpoint, cfg, device)
         tokenizer = AutoTokenizer.from_pretrained(resume_checkpoint)
     else:
-        model = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_str).to(device)
+        model = _load_seq2seq_model(cfg.model_str, cfg, device)
         tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_str)
 
     if hasattr(model, "gradient_checkpointing_enable"):
