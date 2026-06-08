@@ -709,9 +709,10 @@ centrales. La adaptación metodológica es:
    - selección de mejor checkpoint por `best_metric="chrfpp"`;
    - `wall_time_seconds` en `metrics.json` para registrar tiempos en corridas
      nuevas;
-   - `optimizer_name="adamw_bnb_8bit"` para corridas grandes en A100.
+   - `optimizer_name="adamw_bnb_8bit"` para corridas grandes en A100;
+   - QLoRA 4-bit + LoRA para correr NLLB 3.3B en L4 con RAM amplia.
 2. `notebooks/nllb_finetuned_3_3b_colab.ipynb` queda preparado para Colab Pro+
-   con A100 y `facebook/nllb-200-3.3B`.
+   con dos rutas: A100 full fine-tuning o L4 high-RAM con QLoRA.
 3. `scripts/evaluate_prediction_ensembles.py` genera ensambles ligeros a partir
    de las predicciones existentes y escribe resultados en `outputs_ensembles/`.
 
@@ -730,22 +731,24 @@ La nueva notebook mantiene los parámetros comparables del baseline:
 | Micro-batch físico | 1 |
 | Acumulación de gradiente | 8 |
 | Precisión | bf16 |
-| Optimizador | AdamW 8-bit |
-| Requisito de hardware | A100 con al menos 39 GiB de VRAM |
+| Entrenamiento | A100: full fine-tuning; L4: QLoRA 4-bit + LoRA |
+| Optimizador | A100: AdamW 8-bit; L4: AdamW sobre adaptadores |
+| Requisito de hardware | A100 ≥39 GiB VRAM, o L4 ≥20 GiB VRAM + RAM ≥40 GiB |
 | Checkpoint | cada 100 pasos de optimizador |
 | Criterio de mejor checkpoint | `chrF++` promedio en validación |
 
 El micro-batch físico baja a 1 porque full fine-tuning de 3.3B con batch físico
 8 no es realista en Colab; `gradient_accumulation_steps=8` conserva el batch
-efectivo y por tanto la comparabilidad experimental. La notebook valida antes
-de cargar el modelo que Colab haya asignado una **A100 con al menos 39 GiB**;
-si el runtime entrega una GPU menor (por ejemplo L4/T4 de ~22 GiB), aborta sin
-entrenar para evitar OOM. No hay fallback automático a QLoRA ni a una GPU
-menor. La salida se guarda en Google Drive bajo
-`proyecto-integrador-avance5/outputs_nllb_3_3b/`. Si Colab se desconecta, basta
-volver a ejecutar la notebook: `train()` detecta `checkpoint-last` y continúa
-desde el estado guardado, siempre que el nuevo runtime también cumpla el
-requisito de A100.
+efectivo y por tanto la comparabilidad experimental. Si Colab asigna A100 de
+40 GB o más, la notebook ejecuta full fine-tuning en bf16. Si asigna L4 de
+~22 GB con RAM amplia, ejecuta QLoRA 4-bit y entrena únicamente adaptadores
+LoRA; esto no es equivalente a full fine-tuning, pero permite probar la red
+3.3B en el recurso disponible sin caer en OOM. Si el runtime no cumple ninguna
+de esas dos condiciones, aborta antes de cargar el modelo. La salida se guarda
+en Google Drive bajo carpetas separadas:
+`outputs_nllb_3_3b_full_a100/` u `outputs_nllb_3_3b_qlora_l4/`. Si Colab se
+desconecta, basta volver a ejecutar la notebook: `train()` detecta
+`checkpoint-last` y continúa desde el estado guardado.
 
 ### Ensambles evaluados
 

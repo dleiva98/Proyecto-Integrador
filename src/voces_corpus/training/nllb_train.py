@@ -30,6 +30,7 @@ from tqdm import tqdm
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
+    BitsAndBytesConfig,
     DataCollatorForSeq2Seq,
     PreTrainedTokenizer,
 )
@@ -67,6 +68,12 @@ class TrainConfig:
     optimizer_name: str = "adamw_torch"  # adamw_torch | adamw_bnb_8bit
     required_gpu_name: Optional[str] = None
     min_cuda_memory_gb: Optional[float] = None
+    min_system_memory_gb: Optional[float] = None
+    load_in_4bit: bool = False
+    lora_r: int = 0
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+    lora_target_modules: list[str] = field(default_factory=lambda: ["q_proj", "v_proj"])
 
     # Par del proyecto: bri <-> es
     src_lang: str = "es"
@@ -192,8 +199,11 @@ def _set_reproducible_seed(seed: int) -> None:
 
 
 def _make_optimizer(model, cfg: TrainConfig):
+    params = [p for p in model.parameters() if p.requires_grad]
+    if not params:
+        raise ValueError("No hay parámetros entrenables. Revisa la configuración LoRA/full fine-tuning.")
     if cfg.optimizer_name == "adamw_torch":
-        return torch.optim.AdamW(model.parameters(), lr=cfg.lr, eps=cfg.eps, weight_decay=cfg.weight_decay)
+        return torch.optim.AdamW(params, lr=cfg.lr, eps=cfg.eps, weight_decay=cfg.weight_decay)
     if cfg.optimizer_name == "adamw_bnb_8bit":
         try:
             import bitsandbytes as bnb
@@ -202,13 +212,26 @@ def _make_optimizer(model, cfg: TrainConfig):
                 "optimizer_name='adamw_bnb_8bit' requiere instalar bitsandbytes. "
                 "En Colab: %pip install -q bitsandbytes"
             ) from exc
-        return bnb.optim.AdamW8bit(model.parameters(), lr=cfg.lr, eps=cfg.eps, weight_decay=cfg.weight_decay)
+        return bnb.optim.AdamW8bit(params, lr=cfg.lr, eps=cfg.eps, weight_decay=cfg.weight_decay)
     raise ValueError(f"optimizer_name no soportado: {cfg.optimizer_name}")
 
 
 def _validate_hardware_requirements(cfg: TrainConfig, device: str) -> None:
-    if cfg.required_gpu_name is None and cfg.min_cuda_memory_gb is None:
+    if cfg.required_gpu_name is None and cfg.min_cuda_memory_gb is None and cfg.min_system_memory_gb is None:
         return
+    if cfg.min_system_memory_gb is not None:
+        try:
+            import psutil
+        except ImportError as exc:
+            raise ImportError("min_system_memory_gb requiere psutil. En Colab: %pip install -q psutil") from exc
+        system_gb = psutil.virtual_memory().total / 1024**3
+        print(f"RAM del sistema: {system_gb:.1f} GiB")
+        if system_gb < cfg.min_system_memory_gb:
+            raise RuntimeError(
+                f"RAM insuficiente: se requieren al menos {cfg.min_system_memory_gb:.1f} GiB, "
+                f"pero el runtime actual tiene {system_gb:.1f} GiB."
+            )
+
     if device != "cuda":
         raise RuntimeError(
             "Esta corrida requiere GPU CUDA, pero el runtime actual no tiene CUDA disponible."
@@ -244,11 +267,73 @@ def _torch_dtype_for_model(cfg: TrainConfig, device: str):
 
 
 def _load_seq2seq_model(model_path: str | Path, cfg: TrainConfig, device: str):
+    if cfg.load_in_4bit:
+        if device != "cuda":
+            raise RuntimeError("load_in_4bit requiere GPU CUDA.")
+        compute_dtype = torch.bfloat16 if cfg.use_bfloat16 else torch.float16
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=compute_dtype,
+        )
+        return AutoModelForSeq2SeqLM.from_pretrained(
+            model_path,
+            quantization_config=quantization_config,
+            device_map="auto",
+        )
+
     kwargs = {}
     torch_dtype = _torch_dtype_for_model(cfg, device)
     if torch_dtype is not None:
         kwargs["torch_dtype"] = torch_dtype
     return AutoModelForSeq2SeqLM.from_pretrained(model_path, **kwargs).to(device)
+
+
+def _attach_lora_if_needed(model, cfg: TrainConfig, adapter_dir: Optional[Path] = None):
+    if cfg.lora_r <= 0:
+        return model
+
+    try:
+        from peft import LoraConfig, PeftModel, TaskType, get_peft_model, prepare_model_for_kbit_training
+    except ImportError as exc:
+        raise ImportError("LoRA/QLoRA requiere peft. En Colab: %pip install -q peft") from exc
+
+    if cfg.load_in_4bit:
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+
+    if adapter_dir is not None and (adapter_dir / "adapter_config.json").exists():
+        model = PeftModel.from_pretrained(model, adapter_dir, is_trainable=True)
+        print(f"Adaptadores LoRA restaurados desde: {adapter_dir}")
+        return model
+
+    lora_config = LoraConfig(
+        r=cfg.lora_r,
+        lora_alpha=cfg.lora_alpha,
+        lora_dropout=cfg.lora_dropout,
+        bias="none",
+        task_type=TaskType.SEQ_2_SEQ_LM,
+        target_modules=cfg.lora_target_modules,
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+    return model
+
+
+def load_trained_model(model_dir: Path, cfg: TrainConfig, device: str):
+    """Carga un checkpoint final/best para evaluación, incluyendo adaptadores LoRA."""
+    model_dir = Path(model_dir)
+    if cfg.lora_r > 0 and (model_dir / "adapter_config.json").exists():
+        model = _load_seq2seq_model(cfg.model_str, cfg, device)
+        model = _attach_lora_if_needed(model, cfg, model_dir)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_dir if (model_dir / "tokenizer_config.json").exists() else cfg.tokenizer_str
+        )
+        return model, tokenizer
+
+    model = _load_seq2seq_model(model_dir, cfg, device)
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    return model, tokenizer
 
 
 def _checkpoint_state_path(checkpoint_dir: Path) -> Path:
@@ -346,11 +431,19 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
     resume_checkpoint = _resolve_resume_checkpoint(cfg, output_dir, repo_root)
     if resume_checkpoint is not None:
         print(f"Reanudando desde checkpoint: {resume_checkpoint}")
-        model = _load_seq2seq_model(resume_checkpoint, cfg, device)
-        tokenizer = AutoTokenizer.from_pretrained(resume_checkpoint)
+        if cfg.lora_r > 0:
+            model = _load_seq2seq_model(cfg.model_str, cfg, device)
+            tokenizer = AutoTokenizer.from_pretrained(
+                resume_checkpoint if (resume_checkpoint / "tokenizer_config.json").exists() else cfg.tokenizer_str
+            )
+            model = _attach_lora_if_needed(model, cfg, resume_checkpoint)
+        else:
+            model = _load_seq2seq_model(resume_checkpoint, cfg, device)
+            tokenizer = AutoTokenizer.from_pretrained(resume_checkpoint)
     else:
         model = _load_seq2seq_model(cfg.model_str, cfg, device)
         tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_str)
+        model = _attach_lora_if_needed(model, cfg)
 
     if hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
