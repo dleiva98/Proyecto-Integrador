@@ -14,3 +14,6 @@ transformers==4.48.3
 tqdm>=4.66
 sacrebleu>=2.4
 matplotlib>=3.8
+
+# Avance 5 — demo interactiva de traducción (Streamlit)
+streamlit>=1.30

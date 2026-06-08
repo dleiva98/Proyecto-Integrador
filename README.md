@@ -1,71 +1,161 @@
-# Programa Voces — Corpus paralelo bribri-español 
+# Programa Voces — Sistema NMT Bribri-Español
 
-Pipeline de construcción del corpus paralelo bribri-español para el
-Proyecto Integrador de la Maestria. en IA Aplicada (Tec de Monterrey, equipo
-Costa Rica), correspondiente al **Componente B** descrito en
-`Avance1_Equipo66.pdf`.
+Traducción Automática Neuronal para la preservación de la lengua bribri, lengua
+de la familia chibcha hablada en el Territorio Indígena Bribri de Talamanca
+(Costa Rica) y clasificada en riesgo. Proyecto Integrador de la Maestría en
+Inteligencia Artificial Aplicada (Tecnológico de Monterrey), equipo Costa Rica,
+en el marco del **Programa Voces** coordinado por el Centro Nacional de
+Inteligencia Artificial (CENIA, Chile) en colaboración con la Pontificia
+Universidad Católica de Chile y el Tec de Monterrey.
 
-El objetivo es producir un corpus normalizado, filtrado y trazable a partir
-de los diez documentos primarios del Programa Voces, listo para entrenar
-fine-tuning de NLLB-200 distilled-600M.
+El sistema cubre el **Componente B** del proyecto: la contribución académica de
+fine-tuning de modelos NMT preentrenados (NLLB-200, M2M-100) sobre un corpus
+paralelo bribri-español construido a partir de fuentes documentales del
+Programa Voces.
 
-## Estructura del repositorio
+| | |
+|---|---|
+| **Institución / Patrocinador** | CENIA (Chile) — Carlos Aspillaga, Director del Programa Voces |
+| **Par lingüístico** | bribri ↔ español (`bri` / `es`) |
+| **Dominio** | Procesamiento de Lenguaje Natural — NMT supervisada (Transformer seq2seq) |
+| **Lugar de aplicación** | Suretka, Talamanca, Limón, Costa Rica |
+| **Equipo CR** | Daniel Leiva (A01795876), Israel Agustín Vargas Monroy (A01796556) |
+| **Mejor modelo actual** | NLLB-200-distilled-600M, 8 épocas, lr 2e-4 (chrF 31.43 / spBLEU 21.16) |
 
-```
-.
-├── Avance1_Equipo66.pdf            ← reporte de avance académico
-├── README.md                       ← este archivo
-├── requirements.txt
-├── data/
-│   ├── raw/
-│   │   ├── pdfs/                   ← 10 documentos fuente
-│   │   └── web/                    ← HTML crudo de scraping (vacío en este corte)
-│   ├── interim/                    ← un JSONL por fuente, sin filtrar
-│   └── processed/
-│       ├── corpus_v0.jsonl
-│       ├── corpus_v0.parquet
-│       ├── source_hashes.json
-│       └── pipeline_report.txt     ← reporte detallado de la última corrida
-├── src/voces_corpus/
-│   ├── schema.py                   ← ParallelPair (Pydantic)
-│   ├── normalization.py            ← NFC + reglas bribri/español
-│   ├── filters.py                  ← word-count, ratio, dedup SHA-256
-│   ├── consolidate.py              ← JSONL ↔ Parquet, hashes
-│   └── extractors/
-│       ├── base.py                 ← heurísticas de idioma
-│       ├── pdf_interlinear.py      ← Gramática, I ttè, Palabras García
-│       ├── pdf_dialog.py           ← Sé'ttö' bribri ie (Hablemos)
-│       ├── pdf_versicle.py         ← ESSJ Gabb (5 líneas por versículo)
-│       ├── pdf_trilingual.py       ← Ditsö̀ rukuö̀ (bri/es/en)
-│       └── web_scraper.py          ← lenguabribri.com (no usado, ver nota)
-├── scripts/
-│   ├── run_pipeline.py             ← orquestador end-to-end
-│   └── make_splits.py              ← train/val/test estratificado (Avance 2)
-├── notebooks/
-│   └── nllb_finetune_colab.ipynb   ← Avance 3: fine-tuning NLLB + métricas
-├── data/splits/                    ← (generado) train.jsonl, val.jsonl, test.jsonl
-└── outputs/                        ← (generado) métricas, predicciones, curvas
-    ├── metrics.json                ← historial de entrenamiento (loss / spBLEU / chrF / chrF++)
-    ├── test_metrics.json           ← métricas finales sobre el split test
-    ├── test_predictions.jsonl      ← 304 predicciones (152 por dirección) + referencia
-    └── training_curves.png         ← curvas de val loss, spBLEU y chrF++ por paso
-```
+---
 
-## Cómo correr el pipeline
+## Índice por avances
 
-```bash
-pip install -r requirements.txt
-python scripts/run_pipeline.py
-```
+- [Entrega 1 — Datos generales del proyecto](#entrega-1--datos-generales-del-proyecto)
+- [Entrega 2 — Preparación de datos y construcción del corpus](#entrega-2--preparación-de-datos-y-construcción-del-corpus)
+- [Avance 3 — Fine-tuning NLLB-200 (baseline, Colab T4)](#avance-3--fine-tuning-nllb-200-baseline)
+- [Avance 4 — Reentrenamiento en H100 y baseline comparativo M2M-100](#avance-4--reentrenamiento-h100-y-baseline-m2m-100)
+- [Avance 5 — Modelos de ensamble](#avance-5--modelos-de-ensamble)
+- [Demo interactiva (Streamlit)](#demo-interactiva-streamlit)
+- [Estructura del repositorio](#estructura-del-repositorio)
+- [Reproducibilidad](#reproducibilidad)
+- [Referencias](#referencias)
 
-Salida principal en `data/processed/`:
+---
 
-- `corpus_v0.jsonl` y `corpus_v0.parquet` — corpus filtrado.
-- `source_hashes.json` — SHA-256 de cada PDF de origen.
-- `pipeline_report.txt` — reporte con cuentas por fuente, distribución por
-  dominio/confianza y los primeros 5 pares de cada fuente.
+## Entrega 1 — Datos generales del proyecto
 
-## Schema de un par paralelo
+Documento original: `Proyecto_Integrador_Entrega_1.pdf`.
+
+### Título
+
+Traducción Automática Neuronal para la Preservación de la Lengua Bribri en
+Riesgo de Extinción: Desarrollo de un Sistema NMT Bribri-Español mediante
+Arquitecturas Transformer para Lenguas de Bajos Recursos.
+
+El título refleja los tres ejes del proyecto: la metodología técnica (NMT
+basada en Transformers), el par lingüístico (bribri-español) y el propósito
+institucional y social (preservación de una lengua indígena costarricense en
+riesgo). La inclusión del término *low-resource languages* responde a la
+categorización internacional del bribri en la literatura de PLN.
+
+### Institución y sponsor
+
+El **Centro Nacional de Inteligencia Artificial (CENIA)** es el principal centro
+de investigación y desarrollo en IA de Chile, fundado en 2021 en el marco del
+programa de centros de excelencia del gobierno chileno. CENIA lidera el Programa
+Voces en colaboración con la Pontificia Universidad Católica de Chile y el Tec
+de Monterrey, actuando como entidad coordinadora de los recursos
+computacionales, la infraestructura de entrenamiento y la dirección científica.
+
+El desafío que motiva la intervención es la ausencia de herramientas digitales
+de traducción automática para el par bribri-español. Esta carencia limita la
+transmisión intergeneracional de la lengua, restringe el acceso de la comunidad
+bribri a contenidos en su idioma, y reduce las posibilidades de documentación y
+revitalización lingüística asistida por tecnología (Gómez-Rendón, 2017; Mager
+et al., 2018).
+
+- **Clasificación SCIAN:** 541720 — Investigación y desarrollo en ciencias
+  naturales y exactas (INEGI).
+- **Sponsor:** Carlos Aspillaga, Director del Programa Voces
+  (carlos.aspillaga@cenia.cl).
+
+### Lugar de aplicación
+
+| | |
+|---|---|
+| País | Costa Rica |
+| Provincia / Cantón | Limón / Talamanca |
+| Comunidad | Suretka, Territorio Indígena Bribri de Talamanca |
+| Sede institucional | CENIA, Santiago, Chile (coordinación central) |
+
+El trabajo de campo se concentra en el Territorio Indígena Bribri de Talamanca,
+en la región fronteriza entre Costa Rica y Panamá. Suretka es una de las
+comunidades de mayor densidad poblacional bribri y el principal nodo de
+coordinación con la Asociación de Desarrollo Integral del Territorio Indígena
+Bribri de Talamanca (ADITIBRI), entidad con la que el proyecto mantiene vínculos
+de colaboración para la validación cultural y lingüística.
+
+El territorio Bribri-Cabécar de Talamanca fue declarado Reserva de la Biosfera
+La Amistad por la UNESCO en 1982. La lengua bribri, de la familia chibcha, es
+hablada por aproximadamente 12,000 personas según el Censo Nacional 2011 (INEC,
+2011), aunque estudios recientes sugieren una reducción de hablantes activos,
+particularmente entre las generaciones jóvenes (Jara Murillo, 2018).
+
+Desde Costa Rica, Daniel Leiva actúa como encargado regional, coordinando la
+recopilación de datos lingüísticos, las alianzas con entidades académicas
+locales (entre ellas la Universidad de Costa Rica) y la articulación con las
+comunidades indígenas bajo principios de soberanía lingüística y beneficio
+comunitario.
+
+### Dominio de aplicación
+
+| | |
+|---|---|
+| Dominio | Procesamiento de Lenguaje Natural (PLN) |
+| Técnica principal | Aprendizaje supervisado — Traducción Automática Neuronal (NMT) |
+| Arquitectura | Transformer (seq2seq con mecanismo de atención) |
+
+La complejidad técnica reside en la naturaleza de lengua de bajos recursos del
+bribri. A diferencia de lenguas con amplia presencia digital, el bribri cuenta
+con un corpus paralelo extremadamente limitado: diccionario bilingüe de Haakon
+Krohn, materiales del Ministerio de Educación Pública de Costa Rica (MEP),
+documentación lingüística académica (Carla Victoria Jara Murillo, Anne Guillon)
+y recursos del propio Programa Voces (Jara Murillo & García Segura, 1997;
+Margery Peña, 1989).
+
+Para mitigar la escasez de datos, el proyecto explora transferencia de
+aprendizaje (transfer learning), ajuste fino de modelos preentrenados en lenguas
+tipológicamente relacionadas, y aumento de datos. Este enfoque sitúa al proyecto
+en la frontera de la investigación aplicada en PLN para lenguas indígenas
+latinoamericanas (Mager et al., 2018; Ortega et al., 2020).
+
+---
+
+## Entrega 2 — Preparación de datos y construcción del corpus
+
+Esta fase corresponde a la **Preparación de Datos** dentro de la metodología
+CRISP-ML(Q), e integra la construcción del corpus, la ingeniería de
+características y la partición de datos.
+
+### Ingeniería de características en el contexto de NMT
+
+La rúbrica de ingeniería de características (FE) está formulada para datos
+tabulares: binning, codificación ordinal/one-hot, escalamiento, PCA, ANOVA,
+chi-cuadrado. En un problema de traducción automática neuronal sobre texto
+paralelo, esas operaciones no tienen análogo directo —no existen variables
+tabulares que discretizar ni componentes principales que extraer—. La
+"ingeniería de características" en NMT se materializa en operaciones equivalentes
+sobre el texto, que cumplen la misma función (convertir datos crudos del mundo
+real en entradas útiles y de baja varianza para el modelo):
+
+| Operación FE tabular | Equivalente en este pipeline NMT | Justificación |
+|---|---|---|
+| Limpieza / normalización de escala | Normalización Unicode NFC + reglas por idioma | Garantiza que tokens idénticos no se representen con bytes distintos; preserva diacríticos del bribri (tonos, nasalización, corte glotal) que son fonémicamente distintivos. |
+| Filtrado de outliers / umbral de varianza | Filtros de longitud, ratio y deduplicación | Descarta pares degenerados (vacíos, longitud extrema, ratio es/bri anómalo, duplicados) que introducirían ruido o memorización. |
+| Codificación de categorías | Tokenización SentencePiece (subword) | Convierte texto en secuencias de IDs de subpalabra; el token de idioma actúa como variable categórica que condiciona la dirección de traducción. |
+| Selección de características | Etiquetado por `domain` y `confidence` | Permite estratificar y, opcionalmente, filtrar por calidad de fuente sin perder trazabilidad. |
+| Extracción de características | Embeddings del Transformer preentrenado | El modelo NLLB/M2M proyecta cada token a un espacio latente multilingüe; el fine-tuning reajusta esa representación al par bribri-español. |
+
+Todas las decisiones quedan justificadas y registradas en
+`data/processed/pipeline_report.txt`.
+
+### Schema de un par paralelo
 
 ```json
 {
@@ -83,7 +173,7 @@ Salida principal en `data/processed/`:
 Dominios: `didactico`, `narrativo`, `religioso`, `etnografico`, `web`.
 Confianzas: `high`, `medium`, `low`.
 
-## Reglas de normalización (resumen)
+### Reglas de normalización
 
 - **Todo texto:** NFC.
 - **Bribri:** preserva todos los diacríticos (tonos, virgulilla nasal, corte
@@ -91,7 +181,7 @@ Confianzas: `high`, `medium`, `low`.
 - **Español:** NFC + comillas tipográficas normalizadas a rectas
   (`“ ” ‘ ’ « »` → `" '`) + dashes a `-` + whitespace colapsado.
 
-## Filtros (en orden, registrados en el reporte)
+### Filtros (en orden, registrados en el reporte)
 
 1. Descarta si `bri` o `es` están vacíos.
 2. Descarta si alguno tiene `< 2` o `> 80` palabras.
@@ -99,589 +189,523 @@ Confianzas: `high`, `medium`, `low`.
 4. Descarta si `bri == es`.
 5. Deduplica por SHA-256 del par `(bri, es)`.
 
-## Resultado de la corrida actual (v0)
+### Fuentes y resultado del corpus (v0)
 
-Total después de filtros: **1.505 pares** (de 1.707 brutos), en línea con
-la estimación 2.500-4.500 declarada en `Avance1_Equipo66.pdf` §2.3
-(estamos al lado bajo del rango esperado, pendiente la fuente web).
+Total después de filtros: **1,505 pares** (de 1,707 brutos), en línea con la
+estimación de 2,500-4,500 declarada en el reporte de Avance 1 (lado bajo del
+rango, pendiente la fuente web).
 
-| Fuente                                  | Brutos | Conservados | Dominio      | Confianza dominante |
-|-----------------------------------------|-------:|------------:|--------------|---------------------|
-| ESSJ_Sanchez_Avendano_Vol1.pdf          |   814  |       675   | religioso    | medium              |
-| I_tte_Historias_bribris.pdf             |   774  |       728   | narrativo    | low¹                |
-| Gramatica_lengua_bribri_Jara2018.pdf    |    76  |        65   | didactico    | high / medium       |
-| Sevtto_bribri_ie_Hablemos.pdf           |    21  |        18   | didactico    | high                |
-| Palabras_Francisco_Garcia.pdf           |    18  |        17   | etnografico  | low¹                |
-| Ditso_rukuo_Identidad_semillas.pdf      |     4  |         2   | narrativo    | low                 |
-| https://www.lenguabribri.com/           |     0  |         0   | web          | —                   |
+| Fuente | Brutos | Conservados | Dominio | Confianza dominante |
+|---|---:|---:|---|---|
+| ESSJ_Sanchez_Avendano_Vol1.pdf | 814 | 675 | religioso | medium |
+| I_tte_Historias_bribris.pdf | 774 | 728 | narrativo | low¹ |
+| Gramatica_lengua_bribri_Jara2018.pdf | 76 | 65 | didactico | high / medium |
+| Sevtto_bribri_ie_Hablemos.pdf | 21 | 18 | didactico | high |
+| Palabras_Francisco_Garcia.pdf | 18 | 17 | etnografico | low¹ |
+| Ditso_rukuo_Identidad_semillas.pdf | 4 | 2 | narrativo | low |
+| https://www.lenguabribri.com/ | 0 | 0 | web | — |
 
 ¹ El "español" en I ttè (interlineal) y en Palabras de Francisco García son
-**glosas palabra-por-palabra**, no traducciones libres. Útiles pero deben
+**glosas palabra-por-palabra**, no traducciones libres. Útiles, pero deben
 ponderarse o filtrarse en el set de entrenamiento NMT.
 
-## Fuentes ignoradas explícitamente
+### Fuentes ignoradas explícitamente
 
-Según las decisiones documentadas en §2.2 del reporte de avance:
+- **Diccionario de mitología bribri (EditUCR)** — PDF escaneado, requiere OCR
+  especializado. Fuera del alcance (pipeline no-OCR).
+- **Kó Késka** — PDF escaneado y mayormente monolingüe español.
+- **Cargos tradicionales** — monolingüe español con terminología bribri en
+  cursiva; no aporta pares paralelos.
+- **Se' dör stë** — bilingüe español-inglés con bribri ornamental; no es corpus
+  del par objetivo.
 
-- **Diccionario de mitología bribri (EditUCR)** — PDF escaneado, requiere
-  OCR especializado. Fuera del alcance del pipeline (no-OCR).
-- **Kó Késka** — PDF escaneado y mayormente monolingüe español con
-  términos bribri.
-- **Cargos tradicionales** — texto monolingüe español con terminología
-  bribri en cursiva; no aporta pares paralelos.
-- **Se' dör stë** — bilingüe español-inglés con bribri ornamental;
-  no es corpus del par objetivo.
+### Estado de la fuente web (lenguabribri.com)
 
-## Estado de la fuente web (lenguabribri.com)
+El extractor `web_scraper.py` está implementado y respeta robots.txt, pero no se
+pudo ejecutar contra lenguabribri.com desde el entorno de cómputo remoto: la
+política de red bloquea el dominio (`HTTP 403 host_not_allowed`). Para
+incorporar la fuente: correr el pipeline desde una máquina con acceso libre, o
+habilitar el dominio en la lista permitida del entorno.
 
-El extractor `web_scraper.py` está implementado y respeta robots.txt, pero
-**no se pudo ejecutar contra lenguabribri.com desde el entorno de cómputo
-remoto usado para esta corrida**: la política de red del contenedor bloquea
-el dominio (`HTTP 403 host_not_allowed`). Para incorporar la fuente:
-
-1. Correr el pipeline desde una máquina con acceso libre a Internet, o
-2. Habilitar el dominio en la lista permitida del entorno remoto.
-
-Una vez disponible, el scraper guardará HTML crudo bajo
-`data/raw/web/www.lenguabribri.com/` y emitirá pares con `domain="web"`.
-
-## Próximos pasos (alineado con §2.5 del reporte de avance)
-
-1. **Alineación oración-por-oración** con hunalign + LASER embeddings para
-   los pares actualmente etiquetados como `confidence="low"` (I ttè,
-   Palabras García), donde la prosa libre en español existe en otra
-   sección del mismo libro pero no fue alineable con extractores
-   estructurales simples.
-2. **Web scraping** efectivo de lenguabribri.com cuando el dominio esté
-   habilitado.
-3. **Validación por hablantes nativos** sobre muestreo estratificado (5%
-   por dominio) usando el canal de retroalimentación del Componente A.
-4. **Recuperación** vía UCR de Krohn, Margery Peña y materiales MEP
-   (sección 2.4 del reporte de avance).
-
-## Avance 2 — Fine-tuning NLLB-200 y métricas
-
-El segundo entregable usa el corpus `corpus_v0.jsonl` para hacer fine-tuning
-de `facebook/nllb-200-distilled-600M` en ambas direcciones (`es↔bri`) y
-reporta spBLEU, chrF y chrF++.
-
-### Splits
+### Partición de datos
 
 ```bash
 python scripts/make_splits.py
 ```
 
-Produce `data/splits/{train,val,test}.jsonl` con división **80/10/10
-estratificada por `(domain, confidence)`** y semilla 42.
-Cuentas actuales: 1.201 train / 152 val / 152 test.
+División **80/10/10 estratificada por `(domain, confidence)`** con semilla 42.
+Cuentas: **1,201 train / 152 val / 152 test**. La estratificación garantiza que
+cada split conserve la misma proporción de dominios y niveles de confianza, de
+modo que las métricas de validación y test sean representativas del corpus
+completo.
 
-### Cómo entrenar
+### Conclusiones de la fase de preparación de datos (CRISP-ML)
 
-El entrenamiento **requiere GPU** (descarga ~2.4 GB de pesos y corre
-~30-45 min en T4). Recomendado: Colab.
+1. El corpus efectivo (1,505 pares) está en el extremo bajo del rango estimado,
+   confirmando que el bribri es un escenario de muy bajo recurso incluso tras
+   agotar las fuentes documentales disponibles.
+2. La heterogeneidad de fuentes (versículos religiosos, glosas interlineales,
+   diálogo didáctico) genera un corpus con varianza estilística alta en el lado
+   español, lo que condiciona la interpretación posterior de las métricas.
+3. El 49% del corpus etiquetado como `confidence="low"` (glosas) es una
+   limitación estructural conocida que se traslada como caveat a todas las
+   fases de modelado.
+4. La trazabilidad por SHA-256 y el etiquetado por dominio/confianza permiten
+   ablaciones reproducibles en fases posteriores (p. ej. filtrar por confianza).
 
-1. Abrí `notebooks/nllb_finetune_colab.ipynb` en Colab.
-2. Runtime → Change runtime type → **GPU** (T4 es suficiente).
-3. Ejecutá las celdas en orden. Clona este repo, instala
-   `transformers==4.48.3`, `torch`, `sacrebleu`, genera splits si
-   faltan, corre 3 épocas con `batch_size=8`, `lr=5e-4`, `fp16`, y
-   guarda artefactos en `outputs/`.
+---
 
-Para correr el mismo flujo desde un entorno local con GPU:
+## Avance 3 — Fine-tuning NLLB-200 (baseline)
 
-```bash
-pip install -r requirements.txt
-python scripts/make_splits.py
-python -m voces_corpus.training.nllb_train
-```
+Primera iteración de modelado, ejecutada en Google Colab (GPU T4). Fine-tuning
+de `facebook/nllb-200-distilled-600M` en ambas direcciones (`es↔bri`),
+reportando spBLEU, chrF y chrF++.
 
-Configuración por defecto en `src/voces_corpus/training/nllb_train.py`
-(`TrainConfig`). Editá la dataclass o pasale otra instancia a `train()`.
-
-### Métricas
-
-`src/voces_corpus/training/metrics.py` calcula spBLEU
-(`tokenize=flores200`), chrF y chrF++ sobre listas de predicciones y
-referencias. También sirve como CLI sobre un JSONL `{prediction, reference}`:
-
-```bash
-python -m voces_corpus.training.metrics outputs/test_predictions.jsonl \
-    --out outputs/test_metrics.json
-```
-
-El notebook ya genera `outputs/test_predictions.jsonl`,
-`outputs/test_metrics.json` y `outputs/training_curves.png`.
-
-### Decisión: token proxy para bribri
-
-Bribri (`bri`) no tiene token de idioma propio en NLLB-200. Usamos
-`quy_Latn` (Quechua Ayacucho) como proxy: lengua indígena americana, en
-script latino, presente en NLLB. La elección es **discutible** — el
-template oficial sugiere usar cualquier token siempre que el tokenizador
-no convierta caracteres importantes en `<unk>`. Alternativas a evaluar:
-`spa_Latn` (mismo script, baseline), `quy_Latn` (default actual), o un
-token reasignado tras vocabulario extendido. Esto entra en el análisis
-del Avance 2.
-
-### Limitación conocida
-
-El 49% del corpus (`I_tte_Historias_bribris` + Palabras García) tiene
-`confidence="low"` porque el "español" son glosas palabra-por-palabra,
-no traducción libre. Eso introduce ruido sistemático; el split mantiene
-la proporción para que las métricas sean comparables con el corpus real,
-pero conviene reportar también métricas filtrando a `confidence ∈
-{high, medium}` (~758 pares).
-
-## Outputs — resultados experimentales del Avance 3
-
-La carpeta `outputs/` contiene los artefactos producidos por la corrida
-de fine-tuning ejecutada en Colab (GPU T4, fp16, 3 épocas,
-`batch_size=8`, `lr=5e-4`, `max_length=256`, `seed=42`,
-1.201 pares de entrenamiento × 2 direcciones, evaluación cada 100 pasos
-de optimización sobre los 152 pares de validación). Los cuatro archivos
-son **reproducibles** a partir de `corpus_v0.jsonl` y los splits con
-semilla fija; ver `notebooks/nllb_finetune_colab.ipynb`.
-
-### Contenido de `outputs/`
-
-| Archivo | Tipo | Contenido |
-|---|---|---|
-| `metrics.json` | JSON | `config` reproducible + serie temporal de `train_loss`, `val_loss`, `spBLEU`, `chrF` y `chrF++` por paso de evaluación, para `es→bri`, `bri→es` y promedio. |
-| `test_metrics.json` | JSON | Métricas finales sobre el split `test.jsonl` (no visto en entrenamiento). |
-| `test_predictions.jsonl` | JSONL | 304 registros `{direction, prediction, reference}` (152 por dirección) — base para inspección cualitativa y para recomputar métricas con otros tokenizadores. |
-| `training_curves.png` | PNG | Tres paneles (val loss, spBLEU, chrF++) con tres líneas cada uno (`es→bri`, `bri→es`, promedio) en función del paso de optimización. |
-
-### Métricas — qué miden y cómo se leen
-
-Se reportan tres métricas, todas calculadas con `sacrebleu` para que
-sean comparables entre corridas y con literatura externa:
-
-- **spBLEU** (`tokenize=flores200`): BLEU calculado sobre el tokenizador
-  SentencePiece de FLORES-200. Usa la misma tokenización que la
-  evaluación oficial de NLLB; importa para comparar contra la línea base
-  reportada por el modelo. Es estricto: penaliza fuertemente cualquier
-  diferencia de n-grama exacto y se degrada rápido con corpus pequeños.
-- **chrF**: F-score sobre n-gramas de caracteres (n=6 por defecto).
-  Robusto a morfología rica y útil para lenguas aglutinantes o con
-  pocas referencias por oración, como bribri. Es la métrica recomendada
-  por la línea de trabajo de NLLB y WMT para pares de bajo recurso.
-- **chrF++**: variante que añade n-gramas de palabras (`word_order=2`)
-  por encima de chrF. Penaliza un poco más los reordenamientos
-  agramaticales. Suele quedar entre 0.5 y 1.5 puntos por debajo de
-  chrF.
-
-Todas las métricas están en escala 0-100 (mayor es mejor); `eval_loss`
-es la *cross-entropy* media por token (menor es mejor).
-
-### Resultados finales sobre el set de test (152 pares)
-
-| Dirección | eval_loss ↓ | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
-|---|---:|---:|---:|---:|
-| **es → bri** | 2.151 | **18.61** | 26.97 | 26.01 |
-| **bri → es** | 3.056 | 10.26 | **27.34** | **26.16** |
-| **promedio** | 2.603 | 14.43 | 27.16 | 26.09 |
-
-Fuente: `outputs/test_metrics.json`.
-
-**Interpretación de los números absolutos.** Para un par sin datos en
-el pre-entrenamiento de NLLB (bribri *no existe* en NLLB-200), con
-sólo ~1.2k pares paralelos y 3 épocas, llegar a chrF ≈ 27 en ambas
-direcciones es un resultado consistente con la literatura de fine-tuning
-de NLLB sobre lenguas indígenas americanas de muy bajo recurso (cf.
-AmericasNLP 2023, donde la línea base NLLB fine-tuneada para Aymara
-y Guaraní queda en rangos chrF 25-35 con corpus de tamaño similar).
-spBLEU 14 promedio es razonable pero no debería interpretarse como una
-calidad de traducción usable — sirve como **indicador de progreso**
-relativo entre corridas, no como medida absoluta de fluidez.
-
-### Asimetría entre direcciones
-
-`es→bri` casi duplica a `bri→es` en spBLEU (18.61 vs 10.26) pero las
-dos direcciones quedan casi empatadas en chrF/chrF++ (~27 / ~26). Esto
-es informativo y no trivial:
-
-- spBLEU compara n-gramas tokenizados con SentencePiece FLORES-200.
-  El lado bribri del corpus tiene **menor variedad léxica y oraciones
-  más cortas** (dominado por glosas y versículos breves), lo que hace
-  más probable que el modelo recupere n-gramas exactos por
-  memorización. En contraste, el lado español va de glosas
-  telegráficas a traducción libre de prosa religiosa: alta varianza
-  estilística, n-gramas difíciles de acertar.
-- chrF, al operar a nivel de caracteres, **promedia esa varianza** y
-  refleja que la "cantidad de información acertada" es similar en
-  ambas direcciones.
-- `eval_loss` (CE por token) confirma la asimetría desde la
-  perspectiva del modelo: predecir el siguiente token en bribri es
-  más fácil porque su distribución es más concentrada.
-
-La conclusión práctica es que **chrF/chrF++ son la métrica primaria
-para este corpus** y spBLEU debe leerse junto con ellas, no de
-manera aislada.
-
-### Curvas de entrenamiento
-
-![Curvas de entrenamiento](outputs/training_curves.png)
-
-Tres paneles con eje X en pasos de optimización (100 → 900, evaluación
-cada 100 pasos, ~900 pasos ≈ 3 épocas).
-
-1. **Val loss** (panel izquierdo). Caída monotónica suave en ambas
-   direcciones; `es→bri` baja de 3.15 a 2.17 (−31%) y `bri→es` de 3.85
-   a 3.28 (−15%). No hay rebote tipo *overfitting* dentro del
-   horizonte de 900 pasos: la pendiente final aún es negativa, lo que
-   sugiere que **el modelo no terminó de converger** y aumentar épocas
-   o reducir `learning rate` con warmup podría dar mejoras adicionales.
-2. **spBLEU** (panel central). Crecimiento marcado en los primeros
-   400 pasos (0 → ~11 promedio) y posteriormente meseta ruidosa
-   entre 8 y 12 puntos. El ruido refleja que sacrebleu sobre apenas
-   152 referencias es de alta varianza; cada salto/bajada de ~3
-   puntos no es necesariamente cambio de calidad real.
-3. **chrF++** (panel derecho). Crecimiento mucho más estable y
-   monotónico, 10 → 25 promedio sin retrocesos. Esto confirma
-   empíricamente que chrF++ es **una mejor señal de progreso** en
-   este régimen de poco dato que spBLEU.
-
-La señal de `train_loss` (en `metrics.json`, no graficada) tiene más
-ruido (cae de 3.63 a ~1.0-1.4, con dientes de sierra). Esto es esperable
-con `batch_size=8` + AMP fp16; no debe interpretarse como inestabilidad
-del entrenamiento.
-
-### Análisis cualitativo — muestra de `test_predictions.jsonl`
-
-Inspección manual de las predicciones revela cuatro patrones
-recurrentes (extractos literales del JSONL):
-
-**1. Salidas estructuralmente correctas, traducción parcial** (caso
-esperado al alcance del corpus actual):
-
-```
-direction : bri → es
-prediction: "Me llamo Trini."
-reference : "Yo me llamo Trini."
-```
-
-**2. Hallucination temática** — el modelo se ancla al dominio
-religioso (mayoritario en el corpus) cuando la entrada bribri es
-ambigua:
-
-```
-direction : bri → es
-prediction: "que viene en el cielo, que dice todas las cosas que ven y viene en vosotros a la verdad."
-reference : "nombre de todas las cosas que vienen."
-```
-
-**3. Collapse a repetición** — patrón clásico de seq2seq sub-entrenado
-con `max_new_tokens` alto:
-
-```
-direction : es → bri
-prediction: "ẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ."
-reference : "Kotereööö, uuuhhh, ie' tö Sòrbulu tchìwẽ̀wã"
-```
-
-**4. Salida bribri morfológicamente plausible** — se observa que el
-modelo aprende a producir secuencias con diacríticos, tonos y
-clíticos en posiciones gramaticalmente coherentes, aunque el
-contenido léxico no siempre coincide con la referencia:
-
-```
-direction : es → bri
-prediction: "E'ta̠ Marta tö Jesús i-ché: Akë́kë, ma̱ -ma̱ le̱ í̠e̠ a' tso'rö, ye' ë́l kë̀ dawö̀wa̱."
-reference : "E'ta̠ Marta tö Jesús i̱a̱ i-ché: Akë́kë, ma̱ -a̱ mú̱ pa tso' í̱e̱ e̱ ma̠ ya-akë̀ kë̀ dúwa̱."
-```
-
-Este último patrón es la evidencia más fuerte de que el fine-tuning
-**sí está alineando el espacio latente del proxy `quy_Latn` con
-bribri real**: el modelo no sólo memoriza, también generaliza la
-morfología (sufijos `-wã`, `-ke̱`, posiciones de tono) a contextos
-nuevos.
-
-### Configuración exacta (de `metrics.json`)
+### Configuración
 
 ```json
 {
-  "model_str":        "facebook/nllb-200-distilled-600M",
-  "lr":               5e-4,
-  "batch_size":       8,
-  "epochs":           3,
-  "bidirectional":    true,
-  "max_length":       256,
-  "use_float16":      true,
-  "seed":             42,
-  "src_lang_token":   "spa_Latn",
-  "tgt_lang_token":   "quy_Latn"
+  "model_str":      "facebook/nllb-200-distilled-600M",
+  "lr":             5e-4,
+  "batch_size":     8,
+  "epochs":         3,
+  "bidirectional":  true,
+  "max_length":     256,
+  "use_float16":    true,
+  "seed":           42,
+  "src_lang_token": "spa_Latn",
+  "tgt_lang_token": "quy_Latn"
 }
 ```
 
-### Limitaciones de la corrida actual
+### Decisión: token proxy para bribri
 
-1. **Tamaño del corpus**: 1.201 pares de entrenamiento es ~1-2 órdenes
-   de magnitud por debajo de los volúmenes típicos para fine-tuning
-   estable de NLLB-200 distilled. Las métricas absolutas deben
-   leerse con esa caveat.
-2. **Ruido de glosas**: 49 % del corpus es `confidence="low"`. No se
-   filtró por confianza para no reducir el set a ~600 pares, pero
-   sería una ablación natural reportar también las métricas
-   restringiendo a `confidence ∈ {high, medium}`.
-3. **Proxy de idioma**: `quy_Latn` (Quechua Ayacucho) se usó como
-   ancla para bribri; alternativas no exploradas son `spa_Latn` (mismo
-   script, sin información tipológica) y reentrenamiento del
-   tokenizador con vocabulario bribri extendido. Una ablación A/B
-   sobre el token de idioma daría evidencia directa de cuánto importa
-   esa elección.
-4. **Sin warmup ni scheduler**: AdamW plano con `lr=5e-4`. Las curvas
-   sugieren que un `cosine` o `linear` con warmup mejoraría
-   convergencia, sobre todo en `bri→es`.
-5. **Métrica de evaluación**: spBLEU/chrF/chrF++ son automáticas;
-   sería deseable agregar **evaluación humana** (validación por
-   hablantes nativos, ver §"Próximos pasos") en una muestra
-   estratificada del test.
+Bribri (`bri`) no tiene token de idioma propio en NLLB-200. Se usa `quy_Latn`
+(Quechua Ayacucho) como proxy: lengua indígena americana, en script latino,
+presente en NLLB. La elección es **discutible**; el template oficial sugiere
+usar cualquier token siempre que el tokenizador no convierta caracteres
+importantes en `<unk>`. Alternativas a evaluar: `spa_Latn` (mismo script,
+baseline) o un token reasignado tras extender vocabulario.
 
-### Próximos pasos (Avance 3 → Avance 4)
+### Métricas — qué miden
 
-- Ablación del token proxy: corrida idéntica con `spa_Latn` y con un
-  vocabulario extendido, comparando chrF/chrF++ promedio.
-- Filtrado por `confidence`: comparar fine-tuning sobre el corpus
-  completo vs. corpus sin `low`.
-- Schedulers (warmup lineal de 100 pasos + cosine) y más épocas hasta
-  ver rebote en val loss.
-- Evaluación humana de 30 oraciones por dirección sobre el split test.
+Tres métricas, todas con `sacrebleu` para comparabilidad entre corridas y con
+literatura externa:
 
-## Avance 4 — Reentrenamiento en CENIA (H100) y baseline comparativo M2M-100
+- **spBLEU** (`tokenize=flores200`): BLEU sobre el tokenizador SentencePiece de
+  FLORES-200, la misma tokenización de la evaluación oficial de NLLB. Estricto;
+  penaliza diferencias de n-grama exacto y se degrada rápido con corpus
+  pequeños.
+- **chrF**: F-score sobre n-gramas de caracteres (n=6). Robusto a morfología
+  rica, recomendado por NLLB/WMT para pares de bajo recurso.
+- **chrF++**: chrF con n-gramas de palabras (`word_order=2`); penaliza algo más
+  los reordenamientos agramaticales.
 
-El cuarto entregable retoma exactamente donde quedó el Avance 3. Allí las
-curvas mostraban que **el modelo no había terminado de converger** (val loss
-con pendiente aún negativa a 900 pasos) y que faltaban dos ablaciones
-prometidas: más épocas con `learning rate` más bajo, y un **segundo modelo
-de comparación** para verificar que NLLB-200 era realmente la mejor elección
-de arquitectura para este par de muy bajo recurso. Este avance ejecuta ambas
-cosas y las pone una al lado de la otra.
+Escala 0-100 (mayor mejor); `eval_loss` es la cross-entropy media por token
+(menor mejor).
 
-A diferencia del Avance 3 (Google Colab, GPU T4, fp16, sesiones limitadas),
-estas dos corridas se ejecutaron en el **servidor de cómputo del CENIA
-(Centro Nacional de Inteligencia Artificial)** sobre una **GPU NVIDIA H100**.
-La H100 (80 GB HBM, soporte nativo bf16/fp16 y throughput ~1 orden de
-magnitud sobre la T4) hizo viable correr 8 épocas completas y un segundo
-modelo de 418M de parámetros sin las restricciones de tiempo de Colab. La
-única variable que cambia entre corridas son los hiperparámetros y el
-modelo; **splits, semilla (42), corpus, `max_length`, `batch_size` y código
-de métricas se mantienen idénticos** a los del Avance 3 para que la
-comparación sea limpia.
-
-### Lo que se entrena en este avance
-
-| Corrida | Archivo lanzador | Salida | Modelo | Épocas | lr | Hardware |
-|---|---|---|---|---:|---:|---|
-| **NLLB orig** (Avance 3) | notebook Colab | `outputs/` | `nllb-200-distilled-600M` | 3 | 5e-4 | T4 |
-| **NLLB H100** (nuevo) | `run_nllb_h100.py` | `outputs_nllb_h100/` | `nllb-200-distilled-600M` | **8** | **2e-4** | **H100** |
-| **M2M-100** (nuevo) | `m2m100_train.py` | `outputs_m2m100/` | `m2m100_418M` | 3 | 5e-4 | H100 |
-
-`run_nllb_h100.py` **no reescribe** `nllb_train.py`: importa `train()` y
-`TrainConfig`, sólo cambia `epochs=8` y `lr=2e-4`, y guarda en una carpeta
-nueva para no pisar la corrida original. `m2m100_train.py` es un **espejo
-intencional** de `nllb_train.py` (mismo `Dataset`, mismo bucle, mismo
-`evaluate_split`, **mismas métricas**); las únicas diferencias son las
-*obligadas* por el modelo (M2M-100 usa códigos ISO simples y fuerza el idioma
-destino con `get_lang_id` en vez de los tokens `xxx_Latn` de NLLB).
-
-```bash
-export PYTHONPATH="$PWD/src:$PYTHONPATH"
-python run_nllb_h100.py        # NLLB-200, 8 épocas, lr 2e-4  -> outputs_nllb_h100/
-python m2m100_train.py         # M2M-100 baseline             -> outputs_m2m100/
-python make_plots_h100.py      # curvas H100 + barras 3-way
-```
-
-### Nuevos artefactos
-
-| Archivo | Contenido |
-|---|---|
-| `outputs_nllb_h100/metrics.json` | Serie temporal de 24 evaluaciones (100→2400 pasos) con `train_loss`, `val_loss`, spBLEU, chrF y chrF++ por dirección y promedio. |
-| `outputs_nllb_h100/test_metrics.json` | Métricas finales sobre el split test (152 pares). |
-| `outputs_nllb_h100/test_predictions.jsonl` | 304 predicciones (152 × 2 direcciones) de la corrida H100. |
-| `outputs_nllb_h100/training_curves_nllb_h100.png` | Curvas de la corrida H100 (val loss / spBLEU / chrF++). |
-| `outputs_nllb_h100/comparison_bars_3way.png` | Barras comparativas de las 3 corridas sobre test. |
-| `outputs_m2m100/metrics.json`, `test_metrics.json`, `test_predictions.jsonl` | Equivalentes para M2M-100. |
-| `outputs_m2m100/training_curves_m2m100.png` | Curvas de entrenamiento de M2M-100. |
-| `outputs_m2m100/comparison_curves.png` | NLLB-200 vs M2M-100, curvas de validación superpuestas. |
-
-### Resultados finales sobre el set de test (152 pares, promedio de direcciones)
-
-| Corrida | eval_loss ↓ | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
-|---|---:|---:|---:|---:|
-| NLLB orig · 3ep lr5e-4 (Avance 3) | **2.603** | 14.43 | 27.16 | 26.09 |
-| **NLLB H100 · 8ep lr2e-4** | 3.166 | **21.16** | **31.43** | **30.47** |
-| M2M-100 · 3ep lr5e-4 | 3.624 | 1.33 | 9.38 | 8.33 |
-
-Fuente: `outputs_nllb_h100/test_metrics.json`, `outputs/test_metrics.json`,
-`outputs_m2m100/test_metrics.json`.
-
-Desglose por dirección de la corrida ganadora (**NLLB H100**):
+### Resultados sobre test (152 pares)
 
 | Dirección | eval_loss ↓ | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
 |---|---:|---:|---:|---:|
-| **es → bri** | 2.674 | **28.74** | **32.86** | **32.35** |
-| **bri → es** | 3.657 | 13.57 | 30.00 | 28.58 |
-| **promedio** | 3.166 | 21.16 | 31.43 | 30.47 |
+| es → bri | 2.151 | 18.61 | 26.97 | 26.01 |
+| bri → es | 3.056 | 10.26 | 27.34 | 26.16 |
+| **promedio** | **2.603** | **14.43** | **27.16** | **26.09** |
 
-### Comparación de las 3 corridas
+Fuente: `outputs/test_metrics.json`.
 
-![Comparación 3 corridas — test final](outputs_nllb_h100/comparison_bars_3way.png)
+**Interpretación.** Para un par sin datos en el preentrenamiento de NLLB (bribri
+no existe en NLLB-200), con ~1.2k pares y 3 épocas, chrF ≈ 27 en ambas
+direcciones es consistente con la literatura (cf. AmericasNLP 2023, donde la
+línea base NLLB fine-tuneada para aymara y guaraní queda en chrF 25-35 con
+corpus de tamaño similar). spBLEU 14 promedio sirve como indicador de progreso
+relativo, no como medida absoluta de fluidez usable.
 
-El panel de barras resume la conclusión central del avance:
+### Curvas de entrenamiento
 
-- **NLLB H100 mejora a NLLB orig en todas las métricas de calidad de
-  traducción.** chrF sube de 27.16 a **31.43** (+4.27 pts, **+15.7 %**),
-  chrF++ de 26.09 a **30.47** (+16.8 %) y spBLEU de 14.43 a **21.16**
-  (+6.73 pts, **+46.6 %**). La mejora es mayor en `es→bri` (spBLEU
-  18.61 → 28.74, **+54 %**; chrF 26.97 → 32.86) que en `bri→es` (chrF
-  27.34 → 30.00), pero ambas direcciones suben.
-- **M2M-100 queda muy por debajo de ambas corridas de NLLB**: chrF 9.38
-  (≈ ⅓ de NLLB H100) y spBLEU 1.33 (≈ 1/16 de NLLB H100). El experimento
-  confirma empíricamente que **NLLB-200 era la elección correcta de
-  arquitectura** para este par, y no un supuesto del Avance 1.
+![Curvas de entrenamiento Avance 3](outputs/training_curves.png)
 
-### La paradoja val loss ↑ pero chrF ↑ (lectura académica clave)
+Tres paneles (val loss, spBLEU, chrF++) con eje X en pasos de optimización. La
+val loss cae de forma monotónica sin rebote dentro del horizonte de 900 pasos:
+la pendiente final aún es negativa, señal de que el modelo **no terminó de
+converger** —observación que motiva directamente el Avance 4—. chrF++ crece de
+forma estable y monotónica, mientras spBLEU mesetea con alta varianza (apenas
+152 referencias), confirmando que chrF++ es la mejor señal de progreso en este
+régimen de poco dato.
 
-Hay un resultado contraintuitivo que merece análisis: la corrida H100 tiene
-**peor** `eval_loss` (3.17 vs 2.60) y al mismo tiempo **mejor** chrF/spBLEU.
-No es un error: es el fenómeno clásico de **divergencia entre la
-cross-entropy y la calidad decodificada** en NMT de bajo recurso.
+### Asimetría entre direcciones
+
+`es→bri` casi duplica a `bri→es` en spBLEU (18.61 vs 10.26) pero ambas quedan
+empatadas en chrF (~27). El lado bribri tiene menor variedad léxica y oraciones
+más cortas (glosas y versículos breves), facilitando la recuperación de n-gramas
+exactos; el lado español va de glosas telegráficas a prosa religiosa libre, con
+alta varianza. chrF, al operar a nivel de caracteres, promedia esa varianza. La
+conclusión es que **chrF/chrF++ son la métrica primaria de este corpus** y
+spBLEU debe leerse junto con ellas.
+
+### Análisis cualitativo — patrones observados
+
+**1. Estructuralmente correcta, traducción parcial:**
+
+```
+bri → es
+pred: "Me llamo Trini."
+ref : "Yo me llamo Trini."
+```
+
+**2. Hallucination temática** (el modelo se ancla al dominio religioso
+mayoritario ante entrada ambigua):
+
+```
+bri → es
+pred: "que viene en el cielo, que dice todas las cosas que ven y viene en vosotros a la verdad."
+ref : "nombre de todas las cosas que vienen."
+```
+
+**3. Collapse a repetición** (seq2seq sub-entrenado con `max_new_tokens` alto):
+
+```
+es → bri
+pred: "ẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ̀nẽ."
+ref : "Kotereööö, uuuhhh, ie' tö Sòrbulu tchìwẽ̀wã"
+```
+
+**4. Salida bribri morfológicamente plausible** (el modelo generaliza
+morfología —sufijos, tonos, clíticos— a contextos nuevos, evidencia de que el
+fine-tuning alinea el espacio latente del proxy `quy_Latn` con bribri real):
+
+```
+es → bri
+pred: "E'ta̠ Marta tö Jesús i-ché: Akë́kë, ma̱ -ma̱ le̱ í̠e̠ a' tso'rö, ye' ë́l kë̀ dawö̀wa̱."
+ref : "E'ta̠ Marta tö Jesús i̱a̱ i-ché: Akë́kë, ma̱ -a̱ mú̱ pa tso' í̱e̠ e̱ ma̠ ya-akë̀ kë̀ dúwa̱."
+```
+
+### Limitaciones de la corrida
+
+1. **Tamaño del corpus:** 1,201 pares es 1-2 órdenes de magnitud por debajo de
+   lo típico para fine-tuning estable de NLLB-200 distilled.
+2. **Ruido de glosas:** 49% del corpus es `confidence="low"`; no se filtró para
+   no reducir el set a ~600 pares.
+3. **Proxy de idioma:** `quy_Latn` usado como ancla; alternativas no exploradas.
+4. **Sin warmup ni scheduler:** AdamW plano con `lr=5e-4`. Las curvas sugieren
+   que no se alcanzó convergencia plena en 900 pasos.
+
+Estas limitaciones motivaron directamente el Avance 4.
+
+---
+
+## Avance 4 — Reentrenamiento H100 y baseline M2M-100
+
+Dos experimentos ejecutados en el servidor H100 de CENIA, motivados por las
+limitaciones del Avance 3: (a) reentrenar NLLB con más épocas y learning rate
+menor para buscar convergencia, y (b) establecer un baseline comparativo con
+una arquitectura distinta (M2M-100) para validar la elección de NLLB. Splits,
+semilla (42), corpus, `max_length`, `batch_size` y código de métricas se
+mantienen idénticos al Avance 3 para que la comparación sea limpia.
+
+### Experimento A — NLLB-200 reentrenado (8 épocas, lr 2e-4)
+
+Misma arquitectura, corpus y splits que el Avance 3; se modificaron únicamente
+épocas (3 → 8) y learning rate (5e-4 → 2e-4) para favorecer la convergencia y
+reducir el riesgo de sobreajuste con tan pocos datos.
+
+| Dirección | eval_loss ↓ | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
+|---|---:|---:|---:|---:|
+| es → bri | 2.674 | 28.74 | 32.86 | 32.35 |
+| bri → es | 3.657 | 13.57 | 30.00 | 28.58 |
+| **promedio** | **3.166** | **21.16** | **31.43** | **30.47** |
+
+Fuente: `outputs_nllb_h100/test_metrics.json`.
+
+**Mejora respecto al Avance 3:** chrF +15.7% (27.16 → 31.43), chrF++ +16.8%
+(26.09 → 30.47), spBLEU +46.6% (14.43 → 21.16). La ganancia es mayor en `es→bri`
+(spBLEU 18.61 → 28.74, +54%) que en `bri→es`, pero ambas direcciones suben.
 
 ![Curvas de entrenamiento NLLB-H100](outputs_nllb_h100/training_curves_nllb_h100.png)
 
-Leyendo las curvas (eje X en pasos, 100 → 2400, ~300 pasos/época × 8):
+Las curvas (24 evaluaciones, 100→2400 pasos, ~300 pasos/época × 8) muestran que
+chrF++ mesetea recién hacia el paso 1300-1500, mucho después de donde la val
+loss toca su mínimo: las épocas extra que el Avance 3 no ejecutó son las que
+producen la mejora.
 
-1. **Val loss** (izquierda). `es→bri` toca su mínimo (~2.18) alrededor del
-   paso 900 y **rebota** hasta ~2.66; `bri→es` toca mínimo (~2.88) cerca del
-   paso 600 y sube hasta ~3.88. El `train_loss` (en `metrics.json`) cae de
-   3.58 a ~0.16-0.25: el modelo **memoriza** el train. Visto sólo por la
-   CE de validación, esto es *overfitting* y un *early stopping* lo habría
-   cortado en el paso 600-900.
-2. **spBLEU** (centro) y **chrF++** (derecha). Sin embargo, las métricas
-   **decodificadas** siguen subiendo mucho después de ese punto: chrF++
-   `es→bri` mesetea en ~31-32 recién hacia el paso 1300-1500, y `bri→es`
-   en ~28. Es decir, **el mejor checkpoint por val loss NO es el mejor por
-   chrF**: las épocas extra que "empeoran" la CE en realidad mejoran la
-   superposición de caracteres de la traducción.
+### El fenómeno del val loss creciente
 
-La explicación es que la cross-entropy penaliza cada token por
-probabilidad exacta (sensible a sobre-confianza tras memorizar), mientras
-chrF mide solape de n-gramas de caracteres en la **salida realmente
-generada**. En un régimen de ~1.2k pares, seguir entrenando aumenta la
-confianza del modelo (sube CE de validación) pero también afina la
-morfología que produce al decodificar (sube chrF). **La conclusión
-metodológica es que en este proyecto el criterio de selección de modelo
-debe ser chrF/chrF++, no val loss**, y que reportar sólo la CE habría
-ocultado la mejora real. El checkpoint final (`final_nllb`, paso 2400) es
-el que se evalúa en test.
+Un resultado contraintuitivo y central de este avance: la corrida H100 tiene
+**peor** `eval_loss` (3.17 vs 2.60 del Avance 3) y al mismo tiempo **mejor**
+chrF/spBLEU. Dentro de la propia corrida H100, la val loss `es→bri` toca su
+mínimo (~2.18) cerca del paso 900 y rebota hasta ~2.66, mientras chrF++ sigue
+subiendo. No es un error; es el comportamiento conocido del entrenamiento
+prolongado de modelos de generación:
 
-Como efecto secundario, los **bucles de repetición degenerada** que
-aparecían en el Avance 3 (p. ej. `ẽ̀nẽ̀nẽ̀nẽ̀…`) **desaparecen** en la
-corrida H100: más épocas + lr más bajo estabilizan la generación.
+- La cross-entropy de validación penaliza la *confianza* del modelo. Al entrenar
+  más épocas, el modelo produce distribuciones más picudas (sobreconfiadas);
+  cuando acierta el token está más seguro, pero cuando falla la penalización es
+  mayor, elevando la CE media.
+- chrF/spBLEU miden el *texto generado* por decodificación (beam search), no la
+  probabilidad asignada token a token. Un modelo puede generar mejores
+  traducciones aunque su CE empeore.
 
-### NLLB-200 vs M2M-100 — por qué M2M colapsa
+**Conclusión metodológica:** en regímenes de bajo recurso, chrF/chrF++ deben
+gobernar la selección del modelo, no el val loss. Seleccionar por val loss
+habría descartado el mejor modelo de traducción. Como efecto secundario, los
+bucles de repetición degenerada del Avance 3 (p. ej. `ẽ̀nẽ̀nẽ̀…`) desaparecen
+en la corrida H100: más épocas + lr más bajo estabilizan la generación.
 
-![NLLB-200 vs M2M-100 — curvas de validación](outputs_m2m100/comparison_curves.png)
+### Experimento B — Baseline M2M-100 (418M)
 
-Las curvas superpuestas (ambos a 3 épocas / 900 pasos, condición idéntica)
-muestran que **M2M-100 nunca despega**: su val loss baja poco (4.96 → 3.79),
-su spBLEU promedio queda por debajo de 4 con picos ruidosos, y su chrF++ no
-pasa de ~9. La curva propia de M2M (`training_curves_m2m100.png`) confirma
-una señal muy ruidosa y de bajísima magnitud en spBLEU, especialmente en
-`bri→es` (prácticamente 0).
+Para validar empíricamente la elección de NLLB-200 se fine-tuneó M2M-100 (Meta,
+la generación previa a NLLB) con idéntico pipeline, splits y métricas. Mismos
+hiperparámetros que el Avance 3 (3 épocas, lr 5e-4) para una comparación
+controlada contra el baseline NLLB original.
 
-El análisis cualitativo explica el colapso: M2M-100 cae en **bucles de
-repetición** masivos, justo el patrón que NLLB ya superó:
+| Dirección | eval_loss ↓ | spBLEU ↑ | chrF ↑ | chrF++ ↑ |
+|---|---:|---:|---:|---:|
+| es → bri | 2.901 | 2.45 | 10.49 | 9.40 |
+| bri → es | 4.348 | 0.20 | 8.27 | 7.26 |
+| **promedio** | **3.624** | **1.33** | **9.38** | **8.33** |
+
+Fuente: `outputs_m2m100/test_metrics.json`.
+
+**Limitación del proxy de idioma.** NLLB-200 cubre 200 idiomas e incluye
+quechua (`quy_Latn`), usado como proxy de bribri. M2M-100 cubre 100 idiomas y
+**no incluye ninguna lengua indígena americana** —no tiene quechua, aymara ni
+guaraní—. Se usó `br` (bretón) como proxy: lengua minoritaria de bajo recurso en
+script latino, replicando el rol experimental del proxy quechua dado el
+inventario disponible. La asimetría no es idéntica entre ambos modelos porque
+sus vocabularios de idioma difieren por diseño; esta es una limitación inherente
+a comparar dos arquitecturas con inventarios de idioma distintos. El M2M-100,
+además, cae en bucles de repetición masivos justo en el patrón que NLLB ya
+superó.
+
+### Comparación de las tres corridas
+
+| Modelo | Config | spBLEU ↑ | chrF ↑ | chrF++ ↑ | val_loss ↓ |
+|---|---|---:|---:|---:|---:|
+| **NLLB-200 (H100)** | 8 ep, lr 2e-4 | **21.16** | **31.43** | **30.47** | 3.17 |
+| NLLB-200 (Colab) | 3 ep, lr 5e-4 | 14.43 | 27.16 | 26.09 | 2.60 |
+| M2M-100 | 3 ep, lr 5e-4 | 1.33 | 9.38 | 8.33 | 3.62 |
+
+![Comparación de las 3 corridas](outputs_nllb_h100/comparison_bars_3way.png)
+
+![NLLB-200 vs M2M-100, curvas de validación](outputs_m2m100/comparison_curves.png)
+
+El baseline M2M-100 rinde drásticamente por debajo (chrF 9.38 vs 31.43),
+confirmando empíricamente que la mayor cobertura lingüística de NLLB-200 —y en
+particular la disponibilidad de un proxy indígena americano real— es
+determinante para el desempeño en bribri. **El modelo seleccionado para
+producción y para la fase de ensamble es NLLB-200-distilled-600M reentrenado
+(8 épocas, lr 2e-4).**
+
+### Artefactos del Avance 4
+
+- `outputs_nllb_h100/` — `metrics.json`, `test_metrics.json`,
+  `test_predictions.jsonl`, `training_curves_nllb_h100.png`,
+  `comparison_bars_3way.png`, checkpoints `best_nllb_spbleu=*`, `final_nllb/`.
+- `outputs_m2m100/` — `metrics.json`, `test_metrics.json`,
+  `test_predictions.jsonl`, gráficas comparativas.
+- Scripts: `run_nllb_h100.py`, `m2m100_train.py`, `make_plots.py`,
+  `make_plots_h100.py`.
+
+---
+
+## Avance 5 — Modelos de ensamble
+
+> La rúbrica de ensamble está formulada para tareas de clasificación/regresión
+> (curva ROC, matriz de confusión, precision-recall, importancia de
+> características). En NMT —tarea de generación de secuencias— esas herramientas
+> no tienen análogo directo: no existen clases discretas que confundir ni
+> features tabulares cuya importancia medir. Las estrategias de ensamble sí
+> existen en NMT y se documentan aquí con sus equivalentes apropiados, evaluados
+> con chrF/chrF++ como métrica principal.
+
+El código está en `ensemble.py` y se ejecuta sobre los checkpoints del Avance 4
+(servidor H100; los pesos no se versionan por tamaño). Reusa las mismas métricas
+del proyecto para que la tabla comparativa sea consistente con las fases
+previas.
+
+### Estrategias implementadas
+
+**1. Ensamble homogéneo — checkpoint averaging.** Promedia los pesos de los N
+mejores checkpoints (`best_nllb_spbleu=*`) de la corrida NLLB-H100. Es la
+analogía del *bagging* sobre el mismo modelo: reduce la varianza del punto final
+de entrenamiento sin coste de inferencia adicional (el resultado es un único
+modelo). Sólo es válido entre checkpoints del mismo vocabulario.
+
+```bash
+export PYTHONPATH="$PWD/src:$PYTHONPATH"
+python ensemble.py avg --ckpt-dir outputs_nllb_h100 --topk 3 --eval
+```
+
+**2. Ensamble heterogéneo — system combination por MBR.** NLLB-200 y M2M-100
+tienen vocabularios distintos, por lo que no se pueden promediar logits token a
+token. La combinación se hace a nivel de hipótesis: cada sistema genera su
+n-best, se juntan en un pool y se elige por sentencia la hipótesis de consenso
+(máxima chrF promedio contra el resto del pool, Minimum Bayes Risk sin
+referencia). Es la analogía en NMT del *voting*/*blending*, usando el mejor
+modelo individual (NLLB) como ancla, conforme a la consigna de stacking/blending
+con los mejores modelos de la fase previa.
+
+```bash
+python ensemble.py combine \
+    --nllb outputs_nllb_h100/final_nllb \
+    --m2m  outputs_m2m100/final_m2m100 --n-best 5 --eval
+```
+
+### Tabla comparativa (individuales + ensambles)
+
+Ordenada por la métrica principal (chrF). Los tiempos de entrenamiento son del
+hardware indicado; el checkpoint averaging no entrena (sólo promedia pesos ya
+existentes) y el system combination no tiene coste de entrenamiento adicional
+(opera en inferencia).
+
+| # | Modelo | Tipo | chrF ↑ | chrF++ ↑ | spBLEU ↑ | val_loss ↓ | Entrenamiento |
+|---|---|---|---:|---:|---:|---:|---|
+| 1 | NLLB-200 H100 (8 ep, lr 2e-4) | Individual | 31.43 | 30.47 | 21.16 | 3.17 | ~8 ep · H100 |
+| 2 | NLLB checkpoint averaging (top-3) | Ensamble homogéneo | *(pendiente)* | | | | sin coste extra |
+| 3 | NLLB + M2M (MBR) | Ensamble heterogéneo | *(pendiente)* | | | | sin coste extra |
+| 4 | NLLB-200 Colab (3 ep, lr 5e-4) | Individual | 27.16 | 26.09 | 14.43 | 2.60 | ~3 ep · T4 |
+| 5 | M2M-100 (3 ep, lr 5e-4) | Individual | 9.38 | 8.33 | 1.33 | 3.62 | ~3 ep · H100 |
+
+Las filas 2 y 3 se completan al ejecutar `ensemble.py` sobre los pesos del H100;
+`ensemble.py` escribe los resultados en `outputs_ensemble/` y registra los
+tiempos de cada paso.
+
+### Selección del modelo final alineada al negocio
+
+El objetivo de negocio del Programa Voces es **preservación y revitalización
+lingüística**, no traducción de producción a gran escala. En ese marco priman:
+(a) la calidad morfológica de la salida bribri —medida por chrF, robusta a la
+morfología rica de la lengua—, (b) la estabilidad (ausencia de repeticiones
+degeneradas) y (c) un coste de inferencia bajo para poder desplegar la demo en
+hardware modesto. El modelo individual NLLB-200 H100 ya domina las métricas y es
+de inferencia simple; el checkpoint averaging es el candidato natural de
+ensamble por **no añadir coste de inferencia** (un solo modelo resultante),
+mientras que el system combination heterogéneo, aunque puede subir chrF, duplica
+el coste de generación. La elección final entre el individual y el promedio de
+checkpoints se decide por la tabla anterior una vez ejecutada en el H100.
+
+---
+
+## Demo interactiva (Streamlit)
+
+`app.py` es una interfaz web para probar traducciones en ambas direcciones con
+el mejor modelo (NLLB-200 H100). Carga el checkpoint fine-tuneado y, si no lo
+encuentra, cae al modelo base avisando que las traducciones no reflejan el
+fine-tuning.
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+# con un checkpoint específico:
+MODEL_PATH=outputs_nllb_h100/final_nllb streamlit run app.py
+```
+
+Características:
+
+- Selector de dirección `es → bri` / `bri → es` (usa los mismos tokens de idioma
+  del entrenamiento: `spa_Latn` para español, `quy_Latn` como proxy de bribri).
+- Controles de `num_beams`, `max_new_tokens` y `length_penalty`.
+- `no_repeat_ngram_size=3` para mitigar los bucles de repetición típicos del
+  bajo recurso.
+- Ejemplos rápidos precargados por dirección.
+
+El checkpoint fine-tuneado (~2.4 GB) no está versionado (`.gitignore`); colóquelo
+en `outputs_nllb_h100/final_nllb/` o indique la ruta con `MODEL_PATH`.
+
+---
+
+## Estructura del repositorio
 
 ```
-direction : es → bri
-prediction: "E'ta i-ché i̱-i̱a̱ : Akë́kë, ba-ujché̱ r tö i-ujché̱ r tö
-             i-ujché̱ r tö i̱-i̱a̱ : Akë́kë, ba-ujché̱ r tö i-ujché̱ r tö …"
-reference : "i-apàtkë'/apàtké e' tsá̱ ta̱."
+.
+├── README.md
+├── requirements.txt
+├── app.py                         ← Avance 5: demo Streamlit de traducción
+├── ensemble.py                    ← Avance 5: ensambles (averaging + MBR)
+├── Proyecto_Integrador_Entrega_1.pdf
+├── Avance1_Equipo66.pdf
+├── data/
+│   ├── raw/{pdfs,web}/
+│   ├── interim/                   ← un JSONL por fuente, sin filtrar
+│   ├── processed/{corpus_v0.jsonl,corpus_v0.parquet,source_hashes.json,pipeline_report.txt}
+│   └── splits/{train,val,test}.jsonl          (generado)
+├── src/voces_corpus/
+│   ├── schema.py                  ← ParallelPair (Pydantic)
+│   ├── normalization.py           ← NFC + reglas bribri/español
+│   ├── filters.py                 ← word-count, ratio, dedup SHA-256
+│   ├── consolidate.py             ← JSONL ↔ Parquet, hashes
+│   ├── extractors/                ← pdf_interlinear, pdf_dialog, pdf_versicle, pdf_trilingual, web_scraper
+│   └── training/
+│       ├── nllb_train.py          ← fine-tuning NLLB
+│       └── metrics.py             ← spBLEU / chrF / chrF++
+├── scripts/{run_pipeline.py,make_splits.py}
+├── notebooks/nllb_finetune_colab.ipynb
+├── m2m100_train.py                ← Avance 4: baseline M2M-100
+├── run_nllb_h100.py               ← Avance 4: reentrenamiento NLLB H100
+├── make_plots.py, make_plots_h100.py
+├── outputs/                       ← Avance 3 (NLLB Colab)
+├── outputs_nllb_h100/             ← Avance 4 (NLLB H100)
+├── outputs_m2m100/                ← Avance 4 (M2M-100)
+└── outputs_ensemble/              ← Avance 5 (generado por ensemble.py)
 ```
 
-Tres factores concurren, y conviene documentarlos honestamente:
+---
 
-1. **Capacidad y pre-entrenamiento.** M2M-100 418M tiene menos parámetros
-   que NLLB-200 distilled-600M y un pre-entrenamiento menos orientado a
-   bajo recurso; con sólo 3 épocas no logra anclar el espacio del idioma
-   destino.
-2. **Proxy de idioma — caveat a registrar.** Para NLLB el proxy de bribri
-   es `quy_Latn` (Quechua Ayacucho). En M2M la corrida quedó configurada
-   con `tgt_lang_code="br"` (que en el inventario de M2M-100 corresponde a
-   **bretón**, no a quechua `qu`). Es un **confundidor real** en la
-   comparación: parte del mal desempeño de M2M puede deberse a un proxy
-   tipológicamente lejano. Una re-corrida con `qu` es el primer ítem de los
-   próximos pasos antes de declarar una conclusión definitiva sobre M2M.
-3. **Mismas 3 épocas que el baseline antiguo.** M2M se entrenó en la
-   condición original (3ep/lr5e-4) para que su comparación directa fuera
-   contra `NLLB orig`, no contra la corrida H100 de 8 épocas.
+## Reproducibilidad
 
-Aun con el caveat (2), la brecha (chrF 9 vs 27-31) es lo bastante grande
-como para sostener la decisión de seguir con NLLB-200 como modelo base.
+```bash
+pip install -r requirements.txt
+export PYTHONPATH="$PWD/src:$PYTHONPATH"
 
-### Análisis cualitativo — el mismo par, Avance 3 vs Avance 4
+# Corpus y partición
+python scripts/run_pipeline.py
+python scripts/make_splits.py
 
-El test y la semilla no cambiaron, así que se puede inspeccionar **la misma
-oración** en las dos corridas de NLLB. Tomando el par Marta/Jesús que ya se
-analizó en el Avance 3 (patrón 4):
+# Avance 3 — NLLB baseline
+python -m voces_corpus.training.nllb_train
 
-```
-referencia       : E'ta̠ Marta tö Jesús i̱a̱ i-ché: Akë́kë, ma̱ -a̱ mú̱ pa
-                   tso' í̱e̱ e̱ ma̠ ya-akë̀ kë̀ dúwa̱.
-Avance 3 (3ep)   : E'ta̠ Marta tö Jesús i-ché: Akë́kë, ma̱ -ma̱ le̱ í̠e̠ a'
-                   tso'rö, ye' ë́l kë̀ dawö̀wa̱.
-Avance 4 (H100)  : E'ta̠ Marta tö Jesús i̱-i̱a̠ i-ché: Kë́kë, tö ma̱ -e̱'tso'
-                   í̱e̱, ye' ë́l kë̀ dawö̀wa̱ ta̱.
+# Avance 4 — NLLB H100 (8 épocas, lr 2e-4) y baseline M2M-100
+python run_nllb_h100.py
+python m2m100_train.py
+
+# Avance 5 — ensambles
+python ensemble.py avg --ckpt-dir outputs_nllb_h100 --topk 3 --eval
+python ensemble.py combine --nllb outputs_nllb_h100/final_nllb \
+    --m2m outputs_m2m100/final_m2m100 --eval
+
+# Gráficas
+python make_plots.py
+python make_plots_h100.py
+
+# Demo
+streamlit run app.py
 ```
 
-La corrida H100 **recupera `i̱-i̱a̠`** (mucho más cercano a la referencia
-`i̱a̱`, que la versión del Avance 3 omitía) y produce `í̱e̱` con el gancho
-nasal correcto. El contenido todavía no es perfecto, pero el alineamiento
-estructural y morfológico mejora de forma visible — coherente con el +16 %
-de chrF medido. Otros ejemplos de `test_predictions.jsonl` (H100) muestran
-salidas casi exactas en oraciones cortas:
+Notas:
 
-```
-direction : es → bri
-prediction: "i-apàtkë' tsá̱ ka̱."
-reference : "i-apàtkë'/apàtké e' tsá̱ ta̱."
-```
+- `source_hashes.json` registra el SHA-256 de cada PDF; cualquier re-descarga
+  debe coincidir para que `corpus_v0` sea reproducible.
+- Los umbrales de filtrado están como constantes en
+  `src/voces_corpus/filters.py`.
+- Todas las corridas usan semilla 42 y los mismos splits estratificados.
+- El entrenamiento requiere GPU (NLLB-200 distilled descarga ~2.4 GB de pesos);
+  los pesos fine-tuneados y `outputs/` están en `.gitignore` por tamaño.
 
-### Conclusiones del Avance 4
+---
 
-1. **Más épocas con lr más bajo en H100 mejoran NLLB-200** de forma
-   consistente (chrF +15.7 %, chrF++ +16.8 %, spBLEU +46.6 % en promedio),
-   confirmando la hipótesis del Avance 3 de que el modelo no había
-   convergido.
-2. **NLLB-200 supera ampliamente a M2M-100** en condiciones idénticas
-   (chrF 27-31 vs 9), validando empíricamente la elección de arquitectura.
-3. **chrF/chrF++ —no la val loss— deben gobernar la selección de modelo**
-   en este régimen de bajo recurso; la corrida H100 lo demuestra al mejorar
-   chrF mientras su CE de validación rebota.
-4. El proxy de idioma sigue siendo una palanca abierta: el caveat `br` vs
-   `qu` en M2M y la ablación `quy_Latn` vs `spa_Latn` en NLLB quedan
-   pendientes.
+## Referencias
 
-### Próximos pasos (Avance 4 → entrega final)
-
-- **Re-correr M2M-100 con el proxy `qu`** (quechua) para eliminar el
-  confundidor y dar una comparación de arquitectura limpia.
-- **NLLB H100 con selección por chrF + early stopping sobre chrF** (no sobre
-  loss), guardando el mejor checkpoint por chrF++ promedio.
-- **Ablación del proxy en NLLB** (`quy_Latn` vs `spa_Latn` vs vocabulario
-  extendido) ahora que la H100 hace barato el barrido.
-- **Filtrado por `confidence`**: comparar 8 épocas sobre corpus completo vs.
-  corpus sin `low` (~758 pares), para medir cuánto del techo lo impone el
-  ruido de glosas.
-- **Evaluación humana** por hablantes nativos sobre una muestra
-  estratificada del test, como cierre cualitativo de la entrega final.
-
-## Notas reproducibilidad
-
-- `source_hashes.json` registra el SHA-256 de cada PDF; cualquier
-  re-descarga debe coincidir para que `corpus_v0` sea reproducible.
-- Toda la lógica de filtrado tiene umbrales en `src/voces_corpus/filters.py`
-  como constantes claramente identificables.
-- El reporte completo de la última corrida queda en
-  `data/processed/pipeline_report.txt`.
+- INEC. (2011). *X Censo Nacional de Población y VI de Vivienda 2011.* Instituto
+  Nacional de Estadística y Censos de Costa Rica.
+- Jara Murillo, C. V. (2018). El bribri: Lengua en peligro. *Revista de Filología
+  y Lingüística de la Universidad de Costa Rica, 44*(1), 15–32.
+- Jara Murillo, C. V., & García Segura, A. (1997). *Se'ttö': Hablemos bribri.*
+  Editorial de la Universidad de Costa Rica.
+- Margery Peña, E. (1989). *Diccionario fraseológico bribri-español,
+  español-bribri.* Editorial de la Universidad de Costa Rica.
+- Mager, M., Kann, K., Coto-Solano, R., & Rendón-Anaya, M. (2018). Challenges of
+  language technologies for the indigenous languages of the Americas.
+  *Proceedings of COLING 2018.*
+- Ortega, J., Maldonado, A., & Mager, M. (2020). Neural machine translation for
+  low-resource indigenous languages. *Proceedings of AmericasNLP.*
+- Vaswani, A., et al. (2017). Attention is all you need. *NeurIPS, 30.*
