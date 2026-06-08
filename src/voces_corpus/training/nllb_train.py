@@ -290,6 +290,20 @@ def _load_seq2seq_model(model_path: str | Path, cfg: TrainConfig, device: str):
     return AutoModelForSeq2SeqLM.from_pretrained(model_path, **kwargs).to(device)
 
 
+def _enable_input_grads(model) -> None:
+    """Necesario para LoRA + gradient checkpointing en modelos cuantizados."""
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+        return
+
+    input_embeddings = model.get_input_embeddings()
+
+    def make_inputs_require_grad(_module, _inputs, output):
+        output.requires_grad_(True)
+
+    input_embeddings.register_forward_hook(make_inputs_require_grad)
+
+
 def _attach_lora_if_needed(model, cfg: TrainConfig, adapter_dir: Optional[Path] = None):
     if cfg.lora_r <= 0:
         return model
@@ -301,9 +315,11 @@ def _attach_lora_if_needed(model, cfg: TrainConfig, adapter_dir: Optional[Path] 
 
     if cfg.load_in_4bit:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+        _enable_input_grads(model)
 
     if adapter_dir is not None and (adapter_dir / "adapter_config.json").exists():
         model = PeftModel.from_pretrained(model, adapter_dir, is_trainable=True)
+        _enable_input_grads(model)
         print(f"Adaptadores LoRA restaurados desde: {adapter_dir}")
         return model
 
@@ -316,6 +332,7 @@ def _attach_lora_if_needed(model, cfg: TrainConfig, adapter_dir: Optional[Path] 
         target_modules=cfg.lora_target_modules,
     )
     model = get_peft_model(model, lora_config)
+    _enable_input_grads(model)
     model.print_trainable_parameters()
     return model
 
@@ -445,10 +462,11 @@ def train(cfg: TrainConfig, repo_root: Optional[Path] = None) -> dict:
         tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_str)
         model = _attach_lora_if_needed(model, cfg)
 
-    if hasattr(model, "gradient_checkpointing_enable"):
+    peft_kbit_training = cfg.load_in_4bit and cfg.lora_r > 0
+    if hasattr(model, "gradient_checkpointing_enable") and not peft_kbit_training:
         model.gradient_checkpointing_enable()
-        if hasattr(model.config, "use_cache"):
-            model.config.use_cache = False
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = False
 
     train_data = _read_jsonl(train_path)
     val_data = _read_jsonl(val_path)
